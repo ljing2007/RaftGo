@@ -24,20 +24,24 @@ func (mr *Master) schedule(phase jobPhase) {
 	//
 	signals := make(chan bool, ntasks)
 	for i:=0; i < ntasks; i++{
+
+		// must save i to a local variable
 		taskIdx := i
 		go func(){
-			// get a free worker
-			worker := <- mr.registerChannel
-
-			// rpc call to finish job
-			args := DoTaskArgs{mr.jobName, mr.files[taskIdx], phase, taskIdx, nios}
-			ok := call(worker, "Worker.DoTask", &args, new(struct{}))
-			if !ok {
-				fmt.Printf("fail: %v %v tasks (%d I/Os)\n", taskIdx, phase, nios)
-			}else{
-				signals <- true
-				// return the free worke
-				mr.registerChannel <- worker
+			ok := false
+			for !ok {
+				// get a free worker
+				worker := <-mr.registerChannel
+				// rpc call to finish job
+				args := DoTaskArgs{mr.jobName, mr.files[taskIdx], phase, taskIdx, nios}
+				ok = call(worker, "Worker.DoTask", &args, new(struct{}))
+				if !ok {
+					fmt.Printf("fail: %v %v tasks (%d I/Os)\n", taskIdx, phase, nios)
+				}else {
+					signals <- true
+					// return the free worke
+					mr.registerChannel <- worker
+				}
 			}
 		}()
 	}
