@@ -51,6 +51,11 @@ type Entry struct {
 	Command interface{}
 }
 
+type TermLeader struct {
+	Term uint64
+	LeaderId int
+}
+
 //
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -77,7 +82,7 @@ type Raft struct {
 
 	// persist
 	currentTerm 	uint64
-	votedFor	int
+	votedFor	TermLeader
 	log		[]Entry
 
 	// mutable
@@ -177,7 +182,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 
 	deny := false
 
-	if rf.currentTerm > args.Term {
+	if rf.currentTerm > args.Term || rf.votedFor.Term > args.Term {
 		// candidate's Term is stale
 		deny = true
 	}else if lastLogTermV > args.LastLogTerm ||
@@ -187,22 +192,22 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		// (lastTermV > lastTermC) ||
 		// (lastTermV == lastTermC) && (lastIndexV > lastIndexC)
 		deny = true
-	}else if rf.currentTerm == args.Term && rf.votedFor >= 0 {
+	}else if rf.votedFor.Term == args.Term && rf.votedFor.LeaderId >= 0 {
 		// in this Term, voting server has already vote for someone
 		deny = true
 	}
 
 	if(deny) {
 		// send false ack
-		reply.Term = rf.currentTerm
+		reply.Term = rf.votedFor.Term
 		reply.VoteGranted = false
 		return
 	}
 
 	// otherwise, grant vote
 	reply.VoteGranted = true
-	rf.votedFor = args.CandidateId
-	// rf.currentTerm = args.Term
+	reply.Term = rf.currentTerm
+	rf.votedFor = TermLeader{args.Term, args.CandidateId}
 	return
 }
 
@@ -211,7 +216,8 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if args.Term == rf.currentTerm && args.LeaderId != rf.votedFor && rf.role == FOLLOWER {
+	if args.Term == rf.votedFor.Term && args.LeaderId != rf.votedFor.LeaderId &&
+		rf.role == FOLLOWER && rf.votedFor.LeaderId != -1 {
 		log.Fatalf("2 leaders in the same Term, Term: %v, leaders: %v %v\n", args.Term, args.LeaderId, rf.votedFor)
 	}
 
@@ -223,19 +229,29 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	}
 
 	// firstly, let's check the consistency
-	/*
+	check := true
 	logIdxCheck := args.PrevLogIdx
 	logTermCheck := args.PrevLogTerm
 	if logIdxCheck >= uint64(len(rf.log)) || logTermCheck != rf.log[logIdxCheck].Term {
 		// consistency check fails
 		reply.Success = false
 		reply.Term = rf.currentTerm
+		check = false
+	}
+
+	// this msg could serve as a heart beat, if:
+	//	1. msg doesn't contain any commands (entries)
+	//	2. or I don't have a leader now
+	if len(args.Entries) == 0 || rf.votedFor.LeaderId == -1{
+		go func() {
+			rf.heartBeatCh <- &args
+		}()
+
+	}
+
+	if !check {
 		return
 	}
-	*/
-
-	rf.heartBeatCh <- &args
-
 
 }
 
@@ -329,7 +345,7 @@ func (rf *Raft) BroadcastHeartBeat() {
 				matchedLogIdx := rf.matchIdx[server]
 				matchedTermIdx := rf.log[matchedLogIdx].Term
 				//args := makeAppendEntriesArgs(rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, Entry{}, rf.commitIdx)
-				args := AppendEntriesArgs{rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, make([]Entry, 0), rf.commitIdx}
+				args := AppendEntriesArgs{rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, make([]Entry, 0, 0), rf.commitIdx}
 				reply := new(AppendEntriesReply)
 				ok := rf.sendAppendEntries(server, args, reply)
 
@@ -367,7 +383,7 @@ func (rf *Raft) BroadcastHeartBeat() {
 					rf.mu.Lock()
 					rf.role = FOLLOWER
 					rf.currentTerm = msg.Term
-					rf.votedFor = msg.LeaderId
+					rf.votedFor = TermLeader{msg.Term, msg.LeaderId}
 					rf.nextIdx = nil
 					rf.matchIdx = nil
 					rf.mu.Unlock()
@@ -386,20 +402,24 @@ func (rf *Raft) BroadcastHeartBeat() {
 }
 
 // issued a new election Term to become leader, by a candidate
-func (rf *Raft) Election() {
+func (rf *Raft) Election(electionTerm uint64) {
 	// turn into candidate
 	// increase current Term
 	// vote for myself
 	rf.mu.Lock()
+	if rf.currentTerm >= electionTerm {
+		// race
+		log.Fatalf("%v's term is updated by someone, but not be caught\n", rf.me)
+	}
 	rf.role = CANDICATE
-	rf.currentTerm++
-	rf.votedFor = rf.me
+	rf.currentTerm = electionTerm
+	rf.votedFor = TermLeader{electionTerm, rf.me}
 	rf.mu.Unlock()
 
-	log.Printf("new election begin in %v, Term %v\n", rf.me, rf.currentTerm)
+	log.Printf("new election begin in %v, Term %v\n", rf.me, electionTerm)
 	lastLogIdx := uint64(len(rf.log) - 1)
 	lastLogTerm := rf.log[lastLogIdx].Term
-	args := RequestVoteArgs{rf.currentTerm, rf.me, lastLogIdx, lastLogTerm}
+	args := RequestVoteArgs{electionTerm, rf.me, lastLogIdx, lastLogTerm}
 
 
 	recBuff := make(chan *RequestVoteReply, 1)
@@ -466,7 +486,7 @@ func (rf *Raft) Election() {
 			// get heartbeat from other leader
 			rf.currentTerm = msg.Term
 			rf.role = FOLLOWER
-			rf.votedFor = msg.LeaderId
+			rf.votedFor = TermLeader{msg.Term, msg.LeaderId}
 			go rf.HeartBeatTimer()
 			log.Printf("candidate %v becomes follower\n", rf.me)
 			return
@@ -489,13 +509,13 @@ func (rf *Raft) Election() {
 			// another kind of failure
 			rf.currentTerm = reply.Term
 			rf.role = FOLLOWER
-			rf.votedFor = -1
+			rf.votedFor = TermLeader{reply.Term, -1}
 			go rf.HeartBeatTimer()
 			return
 		case <-timeout:
 			// fire another election Term
 			log.Printf("election timeout in candidate %v term %v\n", rf.me, rf.currentTerm)
-			go rf.Election()
+			go rf.Election(electionTerm + 1)
 			return
 		}
 	}
@@ -529,9 +549,9 @@ func (rf *Raft) HeartBeatTimer() {
 					// stale heart beat
 					// ignore and continue the loop
 					log.Println("%v receive a stale heartbeat")
-				}else if rf.votedFor != -1 && rf.currentTerm == msg.Term &&
+				}else if rf.votedFor.LeaderId != -1 && rf.votedFor.Term == msg.Term &&
+						rf.votedFor.LeaderId != msg.LeaderId {
 					// illegal state
-					rf.votedFor != msg.LeaderId {
 					log.Fatalf("there are 2 leaders in the same Term. Term: %v, leader 1 %v leader 2 %v\n",
 						rf.currentTerm, rf.votedFor, msg.LeaderId)
 				}else {
@@ -539,7 +559,7 @@ func (rf *Raft) HeartBeatTimer() {
 					// break the loop to wait next heartBeat
 					rf.mu.Lock()
 					rf.currentTerm = msg.Term
-					rf.votedFor = msg.LeaderId
+					rf.votedFor = TermLeader{msg.Term, msg.LeaderId}
 					rf.mu.Unlock()
 
 					endLoop = true
@@ -547,7 +567,7 @@ func (rf *Raft) HeartBeatTimer() {
 			case <-timeout:
 				// time out, end the heartbeat timer
 				// and fire a new election Term
-				go rf.Election()
+				go rf.Election(rf.currentTerm + 1)
 				return
 			}
 		}
@@ -579,7 +599,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialization code here.
 	rf.currentTerm = 0
-	rf.votedFor = -1
+	rf.votedFor = TermLeader{0, -1}
 	rf.log = make([]Entry, 0)
 
 	// insert a fake entry in the first log
