@@ -7,10 +7,10 @@ package raft
 //
 // rf = Make(...)
 //   create a new Raft server.
-// rf.Start(command interface{}) (index, term, isleader)
+// rf.Start(command interface{}) (index, Term, isleader)
 //   start agreement on a new log entry
-// rf.GetState() (term, isLeader)
-//   ask a Raft for its current term, and whether it thinks it is leader
+// rf.GetState() (Term, isLeader)
+//   ask a Raft for its current Term, and whether it thinks it is leader
 // ApplyMsg
 //   each time a new entry is committed to the log, each Raft peer
 //   should send an ApplyMsg to the service (or tester)
@@ -47,7 +47,7 @@ const (
 )
 
 type Entry struct {
-	term 	uint64
+	Term 	uint64
 	command interface{}
 }
 
@@ -137,44 +137,33 @@ func (rf *Raft) readPersist(data []byte) {
 // example RequestVote RPC arguments structure.
 //
 type RequestVoteArgs struct {
-	TERM		uint64
-	CANDIDATEID 	int
-	LASTLOGIDX 	uint64
-	LASTLOGTERM	uint64
+	Term		uint64
+	CandidateId 	int
+	LastLogIdx 	uint64
+	LastLogTerm	uint64
 }
 
 //
 // example RequestVote RPC reply structure.
 //
 type RequestVoteReply struct {
-	TERM	uint64
-	VOTEGRANTED bool
+	Term	uint64
+	VoteGranted bool
 }
 
 type AppendEntriesArgs struct {
-	TERM 		uint64
-	LEADERID 	int
-	PREVLOGIDX 	uint64
-	PREVLOGTERM	uint64
-	// ENTRIES		Entry
-	LEADERCOMMIT	uint64
+	Term 		uint64
+	LeaderId 	int
+	PrevLogIdx 	uint64
+	PrevLogTerm	uint64
+	Entries		[]Entry
+	LeaderCommit	uint64
 }
 
-func makeAppendEntriesArgs (term uint64, leaderId int, prevIdx uint64,
-	prevTerm uint64, entries Entry, leaderCommit uint64) *AppendEntriesArgs {
-	appendEntriesArgs := new (AppendEntriesArgs)
-	appendEntriesArgs.TERM = term
-	appendEntriesArgs.LEADERID = leaderId
-	appendEntriesArgs.PREVLOGIDX = prevIdx
-	appendEntriesArgs.PREVLOGTERM = prevTerm
-	//appendEntriesArgs.ENTRIES = entries
-	appendEntriesArgs.LEADERCOMMIT = leaderCommit
 
-	return appendEntriesArgs
-}
 type AppendEntriesReply struct {
-	TERM 	uint64
-	SUCCESS bool
+	Term 	uint64
+	Success bool
 }
 
 
@@ -183,50 +172,49 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	lastLogIdxV := uint64(len(rf.log) - 1)
-	lastLogTermV := rf.log[lastLogIdxV].term
+	lastLogTermV := rf.log[lastLogIdxV].Term
 
 
 	deny := false
 
-	if rf.currentTerm > args.TERM {
-		// candidate's term is stale
+	if rf.currentTerm > args.Term {
+		// candidate's Term is stale
 		deny = true
-	}else if lastLogTermV > args.LASTLOGTERM ||
-			(lastLogTermV == args.LASTLOGTERM &&
-				lastLogIdxV > args.LASTLOGIDX){
+	}else if lastLogTermV > args.LastLogTerm ||
+			(lastLogTermV == args.LastLogTerm &&
+				lastLogIdxV > args.LastLogIdx){
 		// voting server's log is more complete ||
 		// (lastTermV > lastTermC) ||
 		// (lastTermV == lastTermC) && (lastIndexV > lastIndexC)
 		deny = true
-	}else if rf.currentTerm == args.TERM && rf.votedFor >= 0 {
-		// in this term, voting server has already vote for someone
+	}else if rf.currentTerm == args.Term && rf.votedFor >= 0 {
+		// in this Term, voting server has already vote for someone
 		deny = true
 	}
 
 	if(deny) {
 		// send false ack
-		reply.TERM = rf.currentTerm
-		reply.VOTEGRANTED = false
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
 		return
 	}
 
 	// otherwise, grant vote
-	reply.VOTEGRANTED = true
-	rf.votedFor = args.CANDIDATEID
-	rf.currentTerm = args.TERM
+	reply.VoteGranted = true
+	rf.votedFor = args.CandidateId
+	rf.currentTerm = args.Term
 	return
 }
 
 // TODO: now appendEntries is only used for heartbeat
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
-	// log.Printf("receive %v\n", args)
-	if args.TERM == rf.currentTerm && args.LEADERID != rf.votedFor {
-		log.Fatalf("2 leaders in the same term, term: %v, leaders: %v %v\n", args.TERM, args.LEADERID, rf.votedFor)
+	if args.Term == rf.currentTerm && args.LeaderId != rf.votedFor {
+		log.Fatalf("2 leaders in the same Term, Term: %v, leaders: %v %v\n", args.Term, args.LeaderId, rf.votedFor)
 	}
 
-	if rf.currentTerm > args.TERM {
-		reply.SUCCESS = false
-		reply.TERM = rf.currentTerm
+	if rf.currentTerm > args.Term {
+		reply.Success = false
+		reply.Term = rf.currentTerm
 		return
 	}
 
@@ -274,16 +262,16 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 //
 // the first return value is the index that the command will appear at
 // if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
+// Term. the third return value is true if this server believes it is
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
-	term := -1
+	Term := -1
 	isLeader := true
 
 
-	return index, term, isLeader
+	return index, Term, isLeader
 }
 
 //
@@ -323,15 +311,15 @@ func (rf *Raft) BroadcastHeartBeat() {
 			go func(server int) {
 				// TODO: do we need to send check information in heartbeat?
 				matchedLogIdx := rf.matchIdx[server]
-				matchedTermIdx := rf.log[matchedLogIdx].term
+				matchedTermIdx := rf.log[matchedLogIdx].Term
 				//args := makeAppendEntriesArgs(rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, Entry{}, rf.commitIdx)
-				args := AppendEntriesArgs{rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, rf.commitIdx}
+				args := AppendEntriesArgs{rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, make([]Entry, 0), rf.commitIdx}
 				reply := new(AppendEntriesReply)
 				ok := rf.sendAppendEntries(server, args, reply)
 
-				// reply shows that my term is stale
+				// reply shows that my Term is stale
 				// prepare for the role change
-				if(ok && reply.TERM > rf.currentTerm) {
+				if(ok && reply.Term > rf.currentTerm) {
 					staleSignal <- true
 				}
 			}(i)
@@ -342,7 +330,7 @@ func (rf *Raft) BroadcastHeartBeat() {
 		for !endLoop{
 			select {
 			case <-staleSignal:
-			// my term is stale
+			// my Term is stale
 			// convert to follower stage
 				rf.mu.Lock()
 				rf.role = FOLLOWER
@@ -352,16 +340,16 @@ func (rf *Raft) BroadcastHeartBeat() {
 				return
 			case msg := <-rf.heartBeatCh:
 			// get a heart beat from others
-				if rf.currentTerm == msg.TERM {
-					// in this term, there are 2 leaders
+				if rf.currentTerm == msg.Term {
+					// in this Term, there are 2 leaders
 					// impossible
-					log.Fatalf("in leader's broadcast, receive the same heartbeat term, value: %v leader: %v\n", msg.TERM, msg.LEADERID)
-				}else if rf.currentTerm < msg.TERM {
+					log.Fatalf("in leader's broadcast, receive the same heartbeat Term, value: %v leader: %v\n", msg.Term, msg.LeaderId)
+				}else if rf.currentTerm < msg.Term {
 					// heart beat from a superior leader
 					rf.mu.Lock()
 					rf.role = FOLLOWER
-					rf.currentTerm = msg.TERM
-					rf.votedFor = msg.LEADERID
+					rf.currentTerm = msg.Term
+					rf.votedFor = msg.LeaderId
 					rf.nextIdx = nil
 					rf.matchIdx = nil
 					rf.mu.Unlock()
@@ -377,10 +365,10 @@ func (rf *Raft) BroadcastHeartBeat() {
 	}
 }
 
-// issued a new election term to become leader, by a candidate
+// issued a new election Term to become leader, by a candidate
 func (rf *Raft) Election() {
 	// turn into candidate
-	// increase current term
+	// increase current Term
 	// vote for myself
 	rf.mu.Lock()
 	rf.role = CANDICATE
@@ -388,9 +376,9 @@ func (rf *Raft) Election() {
 	rf.votedFor = rf.me
 	rf.mu.Unlock()
 
-	log.Printf("new election begin in %v, term %v\n", rf.me, rf.currentTerm)
+	log.Printf("new election begin in %v, Term %v\n", rf.me, rf.currentTerm)
 	lastLogIdx := uint64(len(rf.log) - 1)
-	lastLogTerm := rf.log[lastLogIdx].term
+	lastLogTerm := rf.log[lastLogIdx].Term
 	args := RequestVoteArgs{rf.currentTerm, rf.me, lastLogIdx, lastLogTerm}
 
 
@@ -404,8 +392,8 @@ func (rf *Raft) Election() {
 		// send requestVote in parallel
 		go func(server int) {
 			reply := new(RequestVoteReply)
-			reply.TERM = 0
-			reply.VOTEGRANTED = false
+			reply.Term = 0
+			reply.VoteGranted = false
 			rf.sendRequestVote(server, args, reply)
 			recBuff <- reply
 		}(i)
@@ -413,7 +401,7 @@ func (rf *Raft) Election() {
 
 	// signal: wins the election
 	winSignal := make(chan bool, 1)
-	// signal: my current term is out of date
+	// signal: my current Term is out of date
 	staleSignal := make(chan *RequestVoteReply, 1)
 
 	go func(){
@@ -421,13 +409,13 @@ func (rf *Raft) Election() {
 		approveNum := 1
 		for i := 0; i < len(rf.peers) - 1; i++{
 			reply := <- recBuff
-			if reply.VOTEGRANTED{
+			if reply.VoteGranted{
 				approveNum++
 				if approveNum > len(rf.peers) / 2{
 					winSignal <- true
 					break
 				}
-			}else if reply.TERM > rf.currentTerm{
+			}else if reply.Term > rf.currentTerm{
 				staleSignal <- reply
 				break
 			}
@@ -449,16 +437,16 @@ func (rf *Raft) Election() {
 	for {
 		select {
 		case msg := <- rf.heartBeatCh:
-			if msg.TERM < rf.currentTerm {
+			if msg.Term < rf.currentTerm {
 				// receive stale heartbeat
 				// ignore
 			}
 
 			// fail the election
 			// get heartbeat from other leader
-			rf.currentTerm = msg.TERM
+			rf.currentTerm = msg.Term
 			rf.role = FOLLOWER
-			rf.votedFor = msg.LEADERID
+			rf.votedFor = msg.LeaderId
 			go rf.HeartBeatTimer()
 			log.Printf("candidate %v becomes follower\n", rf.me)
 			return
@@ -472,21 +460,21 @@ func (rf *Raft) Election() {
 				rf.nextIdx[i] = uint64(len(rf.log))
 				rf.matchIdx[i] = 0
 			}
-			log.Printf("candidate %v becomes leader in term %v\n", rf.me, rf.currentTerm)
+			log.Printf("candidate %v becomes leader in Term %v\n", rf.me, rf.currentTerm)
 			go rf.BroadcastHeartBeat()
 			return
 		case reply := <-staleSignal:
-			// discover a new term
+			// discover a new Term
 			// turn into follower state
 			// another kind of failure
-			rf.currentTerm = reply.TERM
+			rf.currentTerm = reply.Term
 			rf.role = FOLLOWER
 			rf.votedFor = -1
 			go rf.HeartBeatTimer()
 			return
 		case <-timeout:
-			// fire another election term
-			log.Printf("follower %v timeout, become candidate\n", rf.me)
+			// fire another election Term
+			log.Printf("election timeout in candidate %v term %v\n", rf.me, rf.currentTerm)
 			go rf.Election()
 			return
 		}
@@ -496,7 +484,7 @@ func (rf *Raft) Election() {
 
 // used by follower
 func (rf *Raft) HeartBeatTimer() {
-	// in the same term, we use the same timeout
+	// in the same Term, we use the same timeout
 	waitTime := time.Duration(HEARTHEATTIMEOUTBASE + rf.rand.Intn(HEARTBEATTIMEOUTRANGE))
 
 	for {
@@ -517,28 +505,28 @@ func (rf *Raft) HeartBeatTimer() {
 		for !endLoop {
 			select {
 			case msg := <-rf.heartBeatCh:
-				if rf.currentTerm > msg.TERM {
+				if rf.currentTerm > msg.Term {
 					// stale heart beat
 					// ignore and continue the loop
 					log.Println("%v receive a stale heartbeat")
-				}else if rf.votedFor != -1 && rf.currentTerm == msg.TERM &&
+				}else if rf.votedFor != -1 && rf.currentTerm == msg.Term &&
 					// illegal state
-					rf.votedFor != msg.LEADERID {
-					log.Fatalf("there are 2 leaders in the same term. term: %v, leader 1 %v leader 2 %v\n",
-						rf.currentTerm, rf.votedFor, msg.LEADERID)
+					rf.votedFor != msg.LeaderId {
+					log.Fatalf("there are 2 leaders in the same Term. Term: %v, leader 1 %v leader 2 %v\n",
+						rf.currentTerm, rf.votedFor, msg.LeaderId)
 				}else {
 					// receive a legal heartbeat
 					// break the loop to wait next heartBeat
 					rf.mu.Lock()
-					rf.currentTerm = msg.TERM
-					rf.votedFor = msg.LEADERID
+					rf.currentTerm = msg.Term
+					rf.votedFor = msg.LeaderId
 					rf.mu.Unlock()
 
 					endLoop = true
 				}
 			case <-timeout:
 				// time out, end the heartbeat timer
-				// and fire a new election term
+				// and fire a new election Term
 				go rf.Election()
 				return
 			}
