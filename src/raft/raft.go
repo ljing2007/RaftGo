@@ -48,7 +48,7 @@ const (
 
 type Entry struct {
 	Term 	uint64
-	command interface{}
+	Command interface{}
 }
 
 //
@@ -202,21 +202,37 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// otherwise, grant vote
 	reply.VoteGranted = true
 	rf.votedFor = args.CandidateId
-	rf.currentTerm = args.Term
+	// rf.currentTerm = args.Term
 	return
 }
 
 // TODO: now appendEntries is only used for heartbeat
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
-	if args.Term == rf.currentTerm && args.LeaderId != rf.votedFor {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if args.Term == rf.currentTerm && args.LeaderId != rf.votedFor && rf.role == FOLLOWER {
 		log.Fatalf("2 leaders in the same Term, Term: %v, leaders: %v %v\n", args.Term, args.LeaderId, rf.votedFor)
 	}
 
 	if rf.currentTerm > args.Term {
+		// msg's term is stale
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		return
 	}
+
+	// firstly, let's check the consistency
+	/*
+	logIdxCheck := args.PrevLogIdx
+	logTermCheck := args.PrevLogTerm
+	if logIdxCheck >= uint64(len(rf.log)) || logTermCheck != rf.log[logIdxCheck].Term {
+		// consistency check fails
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
+	}
+	*/
 
 	rf.heartBeatCh <- &args
 
@@ -337,13 +353,15 @@ func (rf *Raft) BroadcastHeartBeat() {
 				rf.nextIdx = nil
 				rf.matchIdx = nil
 				rf.mu.Unlock()
+				log.Printf("leader %v is stale, turns to follower\n", rf.me)
+				go rf.HeartBeatTimer()
 				return
 			case msg := <-rf.heartBeatCh:
 			// get a heart beat from others
 				if rf.currentTerm == msg.Term {
 					// in this Term, there are 2 leaders
 					// impossible
-					log.Fatalf("in leader's broadcast, receive the same heartbeat Term, value: %v leader: %v\n", msg.Term, msg.LeaderId)
+					log.Fatalf("in leader %v's broadcast, receive the same heartbeat Term, value: %v leader: %v\n", rf.me, msg.Term, msg.LeaderId)
 				}else if rf.currentTerm < msg.Term {
 					// heart beat from a superior leader
 					rf.mu.Lock()
@@ -353,6 +371,8 @@ func (rf *Raft) BroadcastHeartBeat() {
 					rf.nextIdx = nil
 					rf.matchIdx = nil
 					rf.mu.Unlock()
+					log.Printf("leader %v finds a superior leader %v, turns to follower\n", rf.me, rf.votedFor)
+					go rf.HeartBeatTimer()
 					return
 				}
 
