@@ -92,6 +92,7 @@ type Raft struct {
 	// leader only
 	nextIdx 	[]uint64
 	matchIdx 	[]uint64
+	pLocks		[]sync.Mutex
 
 	// memory
 	applyCh chan ApplyMsg
@@ -116,6 +117,7 @@ func (rf *Raft) GetState() (int, bool) {
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
+	return
 	w := new(bytes.Buffer)
 	e := gob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
@@ -208,6 +210,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = true
 	reply.Term = rf.currentTerm
 	rf.votedFor = TermLeader{args.Term, args.CandidateId}
+	rf.persist()
 	return
 }
 
@@ -215,7 +218,6 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
 	if args.Term == rf.votedFor.Term && args.LeaderId != rf.votedFor.LeaderId &&
 		rf.role == FOLLOWER && rf.votedFor.LeaderId != -1 {
 		log.Fatalf("2 leaders in the same Term, Term: %v, leaders: %v %v\n", args.Term, args.LeaderId, rf.votedFor)
@@ -225,34 +227,46 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		// msg's term is stale
 		reply.Success = false
 		reply.Term = rf.currentTerm
+		log.Printf("%v got a stale term from %v\n", rf.me, args.LeaderId)
 		return
 	}
 
-	// firstly, let's check the consistency
-	check := true
+	// treat all messages, whose term >= rf.currentTerm, as a heartBeat
+	go func() {
+		rf.heartBeatCh <- &args
+		rf.mu.Lock()
+		rf.persist()
+		rf.mu.Unlock()
+	}()
+
+	// then, let's check the consistency
 	logIdxCheck := args.PrevLogIdx
 	logTermCheck := args.PrevLogTerm
 	if logIdxCheck >= uint64(len(rf.log)) || logTermCheck != rf.log[logIdxCheck].Term {
 		// consistency check fails
 		reply.Success = false
 		reply.Term = rf.currentTerm
-		check = false
-	}
-
-	// this msg could serve as a heart beat, if:
-	//	1. msg doesn't contain any commands (entries)
-	//	2. or I don't have a leader now
-	if len(args.Entries) == 0 || rf.votedFor.LeaderId == -1{
-		go func() {
-			rf.heartBeatCh <- &args
-		}()
-
-	}
-
-	if !check {
 		return
 	}
 
+	// pass consistency check
+	// append entries safely
+	rf.log = append(rf.log, args.Entries...)
+
+	// commit locally
+	for i := rf.commitIdx; i < args.LeaderCommit; i++ {
+		if rf.commitIdx + 1 >= uint64(len(rf.log))  {
+			break
+		}
+
+		rf.commitIdx++
+		rf.applyCh <- ApplyMsg{int(rf.commitIdx), rf.log[rf.commitIdx], false, nil}
+	}
+
+	rf.persist()
+	reply.Term = rf.currentTerm
+	reply.Success = true
+	return
 }
 
 //
@@ -283,6 +297,55 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 	return ok
 }
 
+func(rf *Raft) Sync(server int) (bool, uint64) {
+	rf.pLocks[server].Lock()
+	var matchedLogIdx uint64
+	var entries []Entry
+	if rf.nextIdx[server] == rf.matchIdx[server] + 1 {
+		// consistent
+		matchedLogIdx = rf.matchIdx[server]
+
+		if matchedLogIdx + 1 < uint64(len(rf.log)){
+			entries = rf.log[matchedLogIdx + 1 : ]
+		}
+
+	}else {
+		// haven't achieve consistency
+		// use nextIdx and empty entries
+		matchedLogIdx = rf.nextIdx[server] - 1
+	}
+
+	rf.pLocks[server].Unlock()
+
+
+	matchedTermIdx := rf.log[matchedLogIdx].Term
+	//args := makeAppendEntriesArgs(rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, Entry{}, rf.commitIdx)
+	args := AppendEntriesArgs{rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, entries, rf.commitIdx}
+	reply := new(AppendEntriesReply)
+	ok := rf.sendAppendEntries(server, args, reply)
+
+	rf.pLocks[server].Lock()
+	if !ok {
+		return false, 0
+	}
+
+	if reply.Success {
+		matchedLogIdx = matchedLogIdx + uint64(len(entries))
+		rf.matchIdx[server] = matchedLogIdx
+		rf.nextIdx[server] = matchedLogIdx + 1
+
+		rf.persist()
+	} else if reply.Term == rf.currentTerm {
+		if matchedLogIdx == 0 {
+			log.Fatalln("matchedLogIdx: 0, fail")
+		}
+		rf.nextIdx[server] = matchedLogIdx
+	}
+
+	rf.pLocks[server].Unlock()
+
+	return true, reply.Term
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -298,12 +361,29 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	Term := -1
-	isLeader := true
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.role != LEADER {
+		return -1, -1, false
+	}
+
+	index := len(rf.log)
+	Term := rf.currentTerm
+
+	rf.log = append(rf.log, Entry{Term, command})
+	rf.persist()
+
+	for i := 0; i < len(rf.peers); i++ {
+		if i == rf.me {
+			continue
+		}
+
+		go rf.Sync(i)
+	}
 
 
-	return index, Term, isLeader
+	return index, int(Term), true
 }
 
 //
@@ -341,17 +421,8 @@ func (rf *Raft) BroadcastHeartBeat() {
 				continue
 			}
 			go func(server int) {
-				// TODO: do we need to send check information in heartbeat?
-				matchedLogIdx := rf.matchIdx[server]
-				matchedTermIdx := rf.log[matchedLogIdx].Term
-				//args := makeAppendEntriesArgs(rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, Entry{}, rf.commitIdx)
-				args := AppendEntriesArgs{rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, make([]Entry, 0, 0), rf.commitIdx}
-				reply := new(AppendEntriesReply)
-				ok := rf.sendAppendEntries(server, args, reply)
-
-				// reply shows that my Term is stale
-				// prepare for the role change
-				if(ok && reply.Term > rf.currentTerm) {
+				ok, term := rf.Sync(server)
+				if ok && term > rf.currentTerm {
 					staleSignal <- true
 				}
 			}(i)
@@ -502,6 +573,8 @@ func (rf *Raft) Election(electionTerm uint64) {
 			}
 			log.Printf("candidate %v becomes leader in Term %v\n", rf.me, rf.currentTerm)
 			go rf.BroadcastHeartBeat()
+
+			// TODO: reset nextIdx and matchIdx
 			return
 		case reply := <-staleSignal:
 			// discover a new Term
@@ -510,6 +583,8 @@ func (rf *Raft) Election(electionTerm uint64) {
 			rf.currentTerm = reply.Term
 			rf.role = FOLLOWER
 			rf.votedFor = TermLeader{reply.Term, -1}
+
+			rf.persist()
 			go rf.HeartBeatTimer()
 			return
 		case <-timeout:
@@ -530,7 +605,7 @@ func (rf *Raft) HeartBeatTimer() {
 	for {
 
 		if rf.role != FOLLOWER {
-			log.Fatal("call heartBeatTimer, but I'm not a follower")
+			log.Fatalln("call heartBeatTimer, but I'm not a follower")
 		}
 
 		timeout := make(chan bool, 1)
@@ -613,6 +688,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// init server only elements
 	rf.nextIdx = nil
 	rf.matchIdx = nil
+	rf.pLocks = make([]sync.Mutex, len(peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
