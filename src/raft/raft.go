@@ -26,6 +26,7 @@ import (
 	"time"
 	"math/rand"
 	"log"
+	"io/ioutil"
 )
 
 // import "bytes"
@@ -39,7 +40,7 @@ const (
 
 // const for timer
 const (
-	HEARTBEATINTERVAL int = 20
+	HEARTBEATINTERVAL int = 60
 	HEARTHEATTIMEOUTBASE int = 150
 	HEARTBEATTIMEOUTRANGE int = 150
 	ELECTIONTIMEOUTBASE int = HEARTHEATTIMEOUTBASE
@@ -186,6 +187,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 
 	if rf.currentTerm > args.Term || rf.votedFor.Term > args.Term {
 		// candidate's Term is stale
+		log.Printf("%v denies the vote from %v because stale\n", rf.me, args.CandidateId)
 		deny = true
 	}else if lastLogTermV > args.LastLogTerm ||
 			(lastLogTermV == args.LastLogTerm &&
@@ -193,9 +195,11 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		// voting server's log is more complete ||
 		// (lastTermV > lastTermC) ||
 		// (lastTermV == lastTermC) && (lastIndexV > lastIndexC)
+		log.Printf("%v denies the vote from %v because more complete\n", rf.me, args.CandidateId)
 		deny = true
 	}else if rf.votedFor.Term == args.Term && rf.votedFor.LeaderId >= 0 {
 		// in this Term, voting server has already vote for someone
+		log.Printf("%v denies the vote from %v because already vote\n", rf.me, args.CandidateId)
 		deny = true
 	}
 
@@ -214,7 +218,6 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	return
 }
 
-// TODO: now appendEntries is only used for heartbeat
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -249,18 +252,26 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		return
 	}
 
+	if rf.commitIdx > args.LeaderCommit {
+		if rf.votedFor.LeaderId != args.LeaderId {
+			log.Fatalln("try to delete committed entry")
+		}
+		return
+	}
+
 	// pass consistency check
-	// append entries safely
+	// delete and append entries safely
+	rf.log = rf.log[ : logIdxCheck + 1]
 	rf.log = append(rf.log, args.Entries...)
 
 	// commit locally
-	for i := rf.commitIdx; i < args.LeaderCommit; i++ {
-		if rf.commitIdx + 1 >= uint64(len(rf.log))  {
+	for cId := rf.commitIdx + 1; cId <= args.LeaderCommit; cId++ {
+		if cId >= uint64(len(rf.log))  {
 			break
 		}
-
-		rf.commitIdx++
-		rf.applyCh <- ApplyMsg{int(rf.commitIdx), rf.log[rf.commitIdx], false, nil}
+		rf.commitIdx = cId
+		log.Printf("%v commit %v %v", rf.me, cId, rf.log[cId])
+		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId].Command, false, nil}
 	}
 
 	rf.persist()
@@ -297,6 +308,74 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 	return ok
 }
 
+func(rf *Raft) LeaderCommit() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.role != LEADER {
+		return
+	}
+	// find the first entry in current term
+	minIdx := 0
+	for i := len(rf.log) - 1; i > 0; i-- {
+		if rf.log[i].Term == rf.currentTerm {
+			minIdx = i
+		}else if rf.log[i].Term < rf.currentTerm {
+			break
+		}
+	}
+
+	if minIdx == 0 {
+		// can't find entry in current term
+		// unsafe to commit
+		return
+	}
+
+	// find the safe upper bound
+	upperBound := rf.commitIdx
+	for minIdx < len(rf.log)  {
+		replicatedNum := 1
+		safe := false
+
+		// loop all peers to check whether this entry is replicated
+		for i := 0; i < len(rf.peers); i++ {
+			if i == rf.me {
+				continue
+			}
+
+			if int(rf.matchIdx[i]) >= minIdx {
+				// entry minIdx has replicated in server i
+				replicatedNum++
+				if replicatedNum > len(rf.peers) / 2 {
+					// replicated in the majority
+					safe = true
+					upperBound = uint64(minIdx)
+					minIdx++
+					break
+				}
+			}
+		}
+		if !safe {
+			break
+		}
+	}
+
+	cId := rf.commitIdx + 1
+	//log.Printf("leader %v upperbound %v min %v\n", rf.me, upperBound, minIdx)
+	for cId <= upperBound {
+		if cId >= uint64(len(rf.log)) {
+			log.Fatalln("out of bound")
+		}
+		log.Printf("leader %v commit %v %v", rf.me, cId, rf.log[cId])
+		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId].Command, false, nil}
+		rf.commitIdx = cId
+		rf.persist()
+		cId++
+	}
+
+}
+
+
 func(rf *Raft) Sync(server int) (bool, uint64) {
 	rf.pLocks[server].Lock()
 	var matchedLogIdx uint64
@@ -325,24 +404,28 @@ func(rf *Raft) Sync(server int) (bool, uint64) {
 	ok := rf.sendAppendEntries(server, args, reply)
 
 	rf.pLocks[server].Lock()
+	defer rf.pLocks[server].Unlock()
 	if !ok {
+
 		return false, 0
 	}
 
 	if reply.Success {
 		matchedLogIdx = matchedLogIdx + uint64(len(entries))
+		if rf.matchIdx[server] != matchedLogIdx{
+			log.Printf("%v matched become %v\n", server, matchedLogIdx)
+		}
 		rf.matchIdx[server] = matchedLogIdx
 		rf.nextIdx[server] = matchedLogIdx + 1
 
-		rf.persist()
 	} else if reply.Term == rf.currentTerm {
 		if matchedLogIdx == 0 {
-			log.Fatalln("matchedLogIdx: 0, fail")
+			//log.Fatalln("matchedLogIdx: 0, fail")
+		}else {
+			rf.nextIdx[server] = matchedLogIdx
 		}
-		rf.nextIdx[server] = matchedLogIdx
 	}
-
-	rf.pLocks[server].Unlock()
+	rf.LeaderCommit()
 
 	return true, reply.Term
 }
@@ -368,10 +451,20 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return -1, -1, false
 	}
 
+	for idx, entry := range rf.log {
+		if entry.Command == command {
+			return idx, int(entry.Term), true
+		}
+	}
+
 	index := len(rf.log)
 	Term := rf.currentTerm
 
 	rf.log = append(rf.log, Entry{Term, command})
+
+	rf.matchIdx[rf.me] = uint64(len(rf.log)) - 1
+	rf.nextIdx[rf.me] = uint64(len(rf.log))
+
 	rf.persist()
 
 	for i := 0; i < len(rf.peers); i++ {
@@ -382,7 +475,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		go rf.Sync(i)
 	}
 
-
+	log.Printf("%v start in leader %v, index %v, term %v\n", command, rf.me, index, Term)
 	return index, int(Term), true
 }
 
@@ -424,6 +517,8 @@ func (rf *Raft) BroadcastHeartBeat() {
 				ok, term := rf.Sync(server)
 				if ok && term > rf.currentTerm {
 					staleSignal <- true
+				}else if !ok{
+					log.Println(rf.me, " send hbt to ", server, " fail")
 				}
 			}(i)
 
@@ -542,26 +637,28 @@ func (rf *Raft) Election(electionTerm uint64) {
 	}()
 
 	// loop until win, fail, or timeout
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
 	for {
 		select {
 		case msg := <- rf.heartBeatCh:
 			if msg.Term < rf.currentTerm {
 				// receive stale heartbeat
 				// ignore
+				break
 			}
+
 
 			// fail the election
 			// get heartbeat from other leader
+			rf.mu.Lock()
 			rf.currentTerm = msg.Term
 			rf.role = FOLLOWER
 			rf.votedFor = TermLeader{msg.Term, msg.LeaderId}
+			rf.mu.Unlock()
 			go rf.HeartBeatTimer()
 			log.Printf("candidate %v becomes follower\n", rf.me)
 			return
 		case <-winSignal:
+			rf.mu.Lock()
 			rf.role = LEADER
 
 			// reinit nextIdx, matchIdx
@@ -571,19 +668,21 @@ func (rf *Raft) Election(electionTerm uint64) {
 				rf.nextIdx[i] = uint64(len(rf.log))
 				rf.matchIdx[i] = 0
 			}
+			rf.mu.Unlock()
 			log.Printf("candidate %v becomes leader in Term %v\n", rf.me, rf.currentTerm)
 			go rf.BroadcastHeartBeat()
 
-			// TODO: reset nextIdx and matchIdx
 			return
 		case reply := <-staleSignal:
+			rf.mu.Lock()
+
 			// discover a new Term
 			// turn into follower state
 			// another kind of failure
 			rf.currentTerm = reply.Term
 			rf.role = FOLLOWER
 			rf.votedFor = TermLeader{reply.Term, -1}
-
+			rf.mu.Unlock()
 			rf.persist()
 			go rf.HeartBeatTimer()
 			return
@@ -662,6 +761,7 @@ func (rf *Raft) HeartBeatTimer() {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	log.SetOutput(ioutil.Discard)
 	log.Printf("new server %v is up\n", me)
 	rf := &Raft{}
 
