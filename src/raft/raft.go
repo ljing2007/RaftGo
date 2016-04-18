@@ -29,6 +29,8 @@ import (
 	"io/ioutil"
 )
 
+const dbg bool = false
+
 // import "bytes"
 // import "encoding/gob"
 type Role int
@@ -403,13 +405,14 @@ func(rf *Raft) Sync(server int) (bool, uint64) {
 	reply := new(AppendEntriesReply)
 	ok := rf.sendAppendEntries(server, args, reply)
 
-	rf.pLocks[server].Lock()
-	defer rf.pLocks[server].Unlock()
+
 	if !ok {
 
 		return false, 0
 	}
 
+	rf.pLocks[server].Lock()
+	defer rf.pLocks[server].Unlock()
 	if reply.Success {
 		matchedLogIdx = matchedLogIdx + uint64(len(entries))
 		if rf.matchIdx[server] != matchedLogIdx{
@@ -517,8 +520,6 @@ func (rf *Raft) BroadcastHeartBeat() {
 				ok, term := rf.Sync(server)
 				if ok && term > rf.currentTerm {
 					staleSignal <- true
-				}else if !ok{
-					log.Println(rf.me, " send hbt to ", server, " fail")
 				}
 			}(i)
 
@@ -532,8 +533,8 @@ func (rf *Raft) BroadcastHeartBeat() {
 			// convert to follower stage
 				rf.mu.Lock()
 				rf.role = FOLLOWER
-				rf.nextIdx = nil
-				rf.matchIdx = nil
+				// rf.nextIdx = nil
+				// rf.matchIdx = nil
 				rf.mu.Unlock()
 				log.Printf("leader %v is stale, turns to follower\n", rf.me)
 				go rf.HeartBeatTimer()
@@ -761,7 +762,9 @@ func (rf *Raft) HeartBeatTimer() {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	log.SetOutput(ioutil.Discard)
+	if !dbg {
+		log.SetOutput(ioutil.Discard)
+	}
 	log.Printf("new server %v is up\n", me)
 	rf := &Raft{}
 
