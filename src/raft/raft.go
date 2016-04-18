@@ -120,7 +120,6 @@ func (rf *Raft) GetState() (int, bool) {
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
-	return
 	w := new(bytes.Buffer)
 	e := gob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
@@ -223,6 +222,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	log.Printf("%v term %v receive %v\n", rf.me, rf.currentTerm, args.Term)
 	if args.Term == rf.votedFor.Term && args.LeaderId != rf.votedFor.LeaderId &&
 		rf.role == FOLLOWER && rf.votedFor.LeaderId != -1 {
 		log.Fatalf("2 leaders in the same Term, Term: %v, leaders: %v %v\n", args.Term, args.LeaderId, rf.votedFor)
@@ -239,9 +239,6 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	// treat all messages, whose term >= rf.currentTerm, as a heartBeat
 	go func() {
 		rf.heartBeatCh <- &args
-		rf.mu.Lock()
-		rf.persist()
-		rf.mu.Unlock()
 	}()
 
 	// then, let's check the consistency
@@ -589,7 +586,11 @@ func (rf *Raft) Election(electionTerm uint64) {
 	args := RequestVoteArgs{electionTerm, rf.me, lastLogIdx, lastLogTerm}
 
 
-	recBuff := make(chan *RequestVoteReply, 1)
+	type Rec struct {
+		ok bool
+		reply *RequestVoteReply
+	}
+	recBuff := make(chan Rec, 1)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			// escape myself
@@ -601,8 +602,8 @@ func (rf *Raft) Election(electionTerm uint64) {
 			reply := new(RequestVoteReply)
 			reply.Term = 0
 			reply.VoteGranted = false
-			rf.sendRequestVote(server, args, reply)
-			recBuff <- reply
+			ok := rf.sendRequestVote(server, args, reply)
+			recBuff <- Rec {ok, reply}
 		}(i)
 	}
 
@@ -610,21 +611,34 @@ func (rf *Raft) Election(electionTerm uint64) {
 	winSignal := make(chan bool, 1)
 	// signal: my current Term is out of date
 	staleSignal := make(chan *RequestVoteReply, 1)
-
+	failSingal := make(chan bool)
 	go func(){
 		// get an approve from myself
 		approveNum := 1
+		denyNum := 0
 		for i := 0; i < len(rf.peers) - 1; i++{
-			reply := <- recBuff
-			if reply.VoteGranted{
+			rec := <- recBuff
+			if !rec.ok {
+				continue
+			}
+			if rec.reply.VoteGranted{
 				approveNum++
 				if approveNum > len(rf.peers) / 2{
 					winSignal <- true
 					break
 				}
-			}else if reply.Term > rf.currentTerm{
-				staleSignal <- reply
-				break
+			}else{
+				if rec.reply.Term > rf.currentTerm {
+					staleSignal <- rec.reply
+					break
+				}
+
+				denyNum++
+				if denyNum > len(rf.peers) / 2 {
+					failSingal <- true
+					break
+				}
+
 			}
 		}
 	}()
@@ -674,6 +688,15 @@ func (rf *Raft) Election(electionTerm uint64) {
 			go rf.BroadcastHeartBeat()
 
 			return
+		case <- failSingal:
+			rf.mu.Lock()
+			rf.role = FOLLOWER
+			rf.votedFor = TermLeader{rf.currentTerm, -1}
+			rf.mu.Unlock()
+			rf.persist()
+			go rf.HeartBeatTimer()
+			return
+
 		case reply := <-staleSignal:
 			rf.mu.Lock()
 
@@ -735,8 +758,8 @@ func (rf *Raft) HeartBeatTimer() {
 					rf.mu.Lock()
 					rf.currentTerm = msg.Term
 					rf.votedFor = TermLeader{msg.Term, msg.LeaderId}
+					rf.persist()
 					rf.mu.Unlock()
-
 					endLoop = true
 				}
 			case <-timeout:
