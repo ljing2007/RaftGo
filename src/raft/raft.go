@@ -216,7 +216,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	rf.votedFor = TermLeader{args.Term, args.CandidateId}
 
-	Trace.Printf("%v term %v vote for %v term %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+	Info.Printf("%v term %v vote for %v term %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 	rf.persist()
 	return
 }
@@ -250,13 +250,14 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		// consistency check fails
 		reply.Success = false
 		reply.Term = rf.currentTerm
+		Info.Printf("appendEngries in %v check consistency fail", rf.me)
 		return
+	}else{
+		//Info.Printf("logIdx %v logTerm %v, my log len %v\n", logIdxCheck, logTermCheck, len(rf.log))
 	}
 
-	if rf.commitIdx > args.LeaderCommit {
-		if rf.votedFor.LeaderId != args.LeaderId {
-			log.Fatalln("try to delete committed entry")
-		}
+	if rf.commitIdx > logIdxCheck {
+		log.Fatalln("try to delete committed entry")
 		return
 	}
 
@@ -271,7 +272,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			break
 		}
 		rf.commitIdx = cId
-		Trace.Printf("%v commit %v %v", rf.me, cId, rf.log[cId])
+		Info.Printf("follower %v commit %v %v", rf.me, cId, rf.log[cId])
 		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId].Command, false, nil}
 	}
 
@@ -354,7 +355,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		go rf.Sync(i)
 	}
 
-	Trace.Printf("new entry %v start in leader %v, index %v, term %v, log size %v\n", command, rf.me, index, Term, len(rf.log))
+	Info.Printf("new entry %v start in leader %v, index %v, term %v, log size %v\n", command, rf.me, index, Term, len(rf.log))
 	return index, int(Term), true
 }
 
