@@ -59,12 +59,12 @@ func(rf *Raft) LeaderCommit() {
 	}
 
 	cId := rf.commitIdx + 1
-	//log.Printf("leader %v upperbound %v min %v\n", rf.me, upperBound, minIdx)
+	//Trace.Printf("leader %v upperbound %v min %v\n", rf.me, upperBound, minIdx)
 	for cId <= upperBound {
 		if cId >= uint64(len(rf.log)) {
 			log.Fatalln("out of bound")
 		}
-		log.Printf("leader %v commit %v %v", rf.me, cId, rf.log[cId])
+		Trace.Printf("leader %v commit %v %v", rf.me, cId, rf.log[cId])
 		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId].Command, false, nil}
 		rf.commitIdx = cId
 		rf.persist()
@@ -86,7 +86,7 @@ func(rf *Raft) Sync(server int) (bool, uint64) {
 		if matchedLogIdx + 1 < uint64(len(rf.log)){
 			entries = rf.log[matchedLogIdx + 1 : ]
 		}else {
-			log.Printf("%v matched to %v, log len in master %v %v\n", server, matchedLogIdx, rf.me, len(rf.log))
+			Trace.Printf("%v matched to %v, log len in master %v %v\n", server, matchedLogIdx, rf.me, len(rf.log))
 		}
 
 	}else {
@@ -115,7 +115,7 @@ func(rf *Raft) Sync(server int) (bool, uint64) {
 	if reply.Success {
 		matchedLogIdx = matchedLogIdx + uint64(len(entries))
 		if rf.matchIdx[server] != matchedLogIdx{
-			log.Printf("%v matched become %v\n", server, matchedLogIdx)
+			Trace.Printf("%v matched become %v\n", server, matchedLogIdx)
 		}
 		rf.matchIdx[server] = matchedLogIdx
 		rf.nextIdx[server] = matchedLogIdx + 1
@@ -176,7 +176,7 @@ func (rf *Raft) BroadcastHeartBeat() {
 			// rf.nextIdx = nil
 			// rf.matchIdx = nil
 				rf.mu.Unlock()
-				log.Printf("leader %v is stale, turns to follower\n", rf.me)
+				Trace.Printf("leader %v is stale, turns to follower\n", rf.me)
 				go rf.HeartBeatTimer()
 				return
 			case msg := <-rf.heartBeatCh:
@@ -194,7 +194,7 @@ func (rf *Raft) BroadcastHeartBeat() {
 					rf.nextIdx = nil
 					rf.matchIdx = nil
 					rf.mu.Unlock()
-					log.Printf("leader %v finds a superior leader %v, turns to follower\n", rf.me, rf.votedFor)
+					Trace.Printf("leader %v finds a superior leader %v, turns to follower\n", rf.me, rf.votedFor)
 					go rf.HeartBeatTimer()
 					return
 				}

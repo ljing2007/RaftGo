@@ -21,7 +21,7 @@ func (rf *Raft) Election(electionTerm uint64) {
 	rf.votedFor = TermLeader{electionTerm, rf.me}
 	rf.mu.Unlock()
 
-	log.Printf("new election begin in %v, Term %v\n", rf.me, rf.currentTerm)
+	Trace.Printf("new election begin in %v, Term %v\n", rf.me, rf.currentTerm)
 	lastLogIdx := uint64(len(rf.log) - 1)
 	lastLogTerm := rf.log[lastLogIdx].Term
 	args := RequestVoteArgs{electionTerm, rf.me, lastLogIdx, lastLogTerm}
@@ -44,7 +44,7 @@ func (rf *Raft) Election(electionTerm uint64) {
 			reply.Term = 0
 			reply.VoteGranted = false
 			ok := rf.sendRequestVote(server, args, reply)
-			log.Printf("in election %v get reply %v\n", rf.me, reply)
+			Trace.Printf("in election %v get reply %v\n", rf.me, reply)
 			recBuff <- Rec {ok, reply}
 		}(i)
 	}
@@ -112,7 +112,7 @@ func (rf *Raft) Election(electionTerm uint64) {
 			rf.votedFor = TermLeader{msg.Term, msg.LeaderId}
 			rf.mu.Unlock()
 			go rf.HeartBeatTimer()
-			log.Printf("candidate %v becomes follower\n", rf.me)
+			Trace.Printf("candidate %v becomes follower\n", rf.me)
 			return
 		case <-winSignal:
 			rf.mu.Lock()
@@ -126,7 +126,7 @@ func (rf *Raft) Election(electionTerm uint64) {
 				rf.matchIdx[i] = 0
 			}
 			rf.mu.Unlock()
-			log.Printf("candidate %v becomes leader in Term %v\n", rf.me, rf.currentTerm)
+			Trace.Printf("candidate %v becomes leader in Term %v\n", rf.me, rf.currentTerm)
 			go rf.BroadcastHeartBeat()
 
 			return
@@ -154,7 +154,7 @@ func (rf *Raft) Election(electionTerm uint64) {
 			return
 		case <-timeout:
 		// fire another election Term
-			log.Printf("election timeout in candidate %v term %v\n", rf.me, rf.currentTerm)
+			Trace.Printf("election timeout in candidate %v term %v\n", rf.me, rf.currentTerm)
 			go rf.Election(electionTerm + 1)
 			return
 		}
