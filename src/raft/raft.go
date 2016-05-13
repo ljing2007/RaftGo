@@ -25,9 +25,11 @@ import (
 	"math/rand"
 	"log"
 	"io/ioutil"
+	"os"
+	"io"
 )
 
-const dbg bool = true
+const dbg bool = false
 
 // import "bytes"
 // import "encoding/gob"
@@ -186,7 +188,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 
 	if rf.currentTerm > args.Term || rf.votedFor.Term > args.Term {
 		// candidate's Term is stale
-		log.Printf("%v denies the vote from %v because stale\n", rf.me, args.CandidateId)
+		Trace.Printf("%v denies the vote from %v because stale\n", rf.me, args.CandidateId)
 		deny = true
 	}else if lastLogTermV > args.LastLogTerm ||
 			(lastLogTermV == args.LastLogTerm &&
@@ -194,11 +196,11 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		// voting server's log is more complete ||
 		// (lastTermV > lastTermC) ||
 		// (lastTermV == lastTermC) && (lastIndexV > lastIndexC)
-		log.Printf("%v denies the vote from %v because more complete\n", rf.me, args.CandidateId)
+		Trace.Printf("%v denies the vote from %v because more complete\n", rf.me, args.CandidateId)
 		deny = true
 	}else if rf.votedFor.Term == args.Term && rf.votedFor.LeaderId >= 0 {
 		// in this Term, voting server has already vote for someone
-		log.Printf("%v denies the vote from %v because already vote\n", rf.me, args.CandidateId)
+		Trace.Printf("%v denies the vote from %v because already vote\n", rf.me, args.CandidateId)
 		deny = true
 	}
 
@@ -214,7 +216,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	rf.votedFor = TermLeader{args.Term, args.CandidateId}
 
-	log.Printf("%v term %v vote for %v term %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+	Trace.Printf("%v term %v vote for %v term %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 	rf.persist()
 	return
 }
@@ -222,7 +224,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	log.Printf("%v term %v receive appendEntries from %v term %v, entry %v\n", rf.me, rf.votedFor, args.LeaderId, args.Term, len(args.Entries))
+	Trace.Printf("%v term %v receive appendEntries from %v term %v, entry %v\n", rf.me, rf.votedFor, args.LeaderId, args.Term, len(args.Entries))
 	if args.Term == rf.votedFor.Term && args.LeaderId != rf.votedFor.LeaderId &&
 		rf.role == FOLLOWER && rf.votedFor.LeaderId != -1 {
 		log.Fatalf("2 leaders in the same Term, Term: %v, leaders: %v %v\n", args.Term, args.LeaderId, rf.votedFor)
@@ -232,7 +234,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		// msg's term is stale
 		reply.Success = false
 		reply.Term = rf.currentTerm
-		log.Printf("%v got a stale term from %v\n", rf.me, args.LeaderId)
+		Trace.Printf("%v got a stale term from %v\n", rf.me, args.LeaderId)
 		return
 	}
 
@@ -269,7 +271,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			break
 		}
 		rf.commitIdx = cId
-		log.Printf("%v commit %v %v", rf.me, cId, rf.log[cId])
+		Trace.Printf("%v commit %v %v", rf.me, cId, rf.log[cId])
 		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId].Command, false, nil}
 	}
 
@@ -352,7 +354,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		go rf.Sync(i)
 	}
 
-	log.Printf("new entry %v start in leader %v, index %v, term %v, log size %v\n", command, rf.me, index, Term, len(rf.log))
+	Trace.Printf("new entry %v start in leader %v, index %v, term %v, log size %v\n", command, rf.me, index, Term, len(rf.log))
 	return index, int(Term), true
 }
 
@@ -380,11 +382,14 @@ func (rf *Raft) Kill() {
 //
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	
+	var trace_out io.Writer
 	if !dbg {
-		log.SetOutput(ioutil.Discard)
+		trace_out = ioutil.Discard
+	}else {
+		trace_out = os.Stdout
 	}
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-
+	InitLogger(trace_out, os.Stdout, os.Stdout, os.Stderr)
 	rf := &Raft{}
 
 	rf.mu.Lock()
@@ -415,7 +420,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	log.Printf("new server %v is up, log size %v\n", me, len(rf.log))
+	Info.Printf("new server %v is up, log size %v\n", me, len(rf.log))
 	// begin from follower, expect to receive heartbeat
 	go rf.HeartBeatTimer()
 	return rf
