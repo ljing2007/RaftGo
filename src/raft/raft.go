@@ -29,7 +29,7 @@ import (
 	"io/ioutil"
 )
 
-const dbg bool = false
+const dbg bool = true
 
 // import "bytes"
 // import "encoding/gob"
@@ -788,6 +788,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	if !dbg {
 		log.SetOutput(ioutil.Discard)
 	}
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 	log.Printf("new server %v is up\n", me)
 	rf := &Raft{}
 
