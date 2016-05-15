@@ -20,6 +20,8 @@ func(rf *Raft) LeaderCommit() {
 			minIdx = i
 		}else if rf.log[i].Term < rf.currentTerm {
 			break
+		}else {
+			Error.Fatal("get term %v > current term %v\n", rf.log[i].Term, rf.currentTerm)
 		}
 	}
 
@@ -62,7 +64,7 @@ func(rf *Raft) LeaderCommit() {
 	//Trace.Printf("leader %v upperbound %v min %v\n", rf.me, upperBound, minIdx)
 	for cId <= upperBound {
 		if cId >= uint64(len(rf.log)) {
-			log.Fatalln("out of bound")
+			Error.Fatalln("out of bound")
 		}
 		Trace.Printf("leader %v commit %v %v", rf.me, cId, rf.log[cId])
 		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId].Command, false, nil}
@@ -75,8 +77,9 @@ func(rf *Raft) LeaderCommit() {
 
 
 func(rf *Raft) Sync(server int) (bool, uint64) {
-	//rf.pLocks[server].Lock()
-	rf.mu.Lock()
+	rf.pLocks[server].Lock()
+
+	//rf.mu.Lock()
 	var matchedLogIdx uint64
 	var entries []Entry
 	if rf.nextIdx[server] == rf.matchIdx[server] + 1 {
@@ -84,7 +87,7 @@ func(rf *Raft) Sync(server int) (bool, uint64) {
 		matchedLogIdx = rf.matchIdx[server]
 
 		if matchedLogIdx + 1 < uint64(len(rf.log)){
-			entries = rf.log[matchedLogIdx + 1 : ]
+
 		}else {
 			Trace.Printf("%v matched to %v, log len in master %v %v\n", server, matchedLogIdx, rf.me, len(rf.log))
 		}
@@ -94,10 +97,9 @@ func(rf *Raft) Sync(server int) (bool, uint64) {
 		// use nextIdx and empty entries
 		matchedLogIdx = rf.nextIdx[server] - 1
 	}
+	rf.pLocks[server].Unlock()
 
-	//rf.pLocks[server].Unlock()
-	rf.mu.Unlock()
-
+	entries = rf.log[matchedLogIdx + 1 : ]
 	matchedTermIdx := rf.log[matchedLogIdx].Term
 	//args := makeAppendEntriesArgs(rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, Entry{}, rf.commitIdx)
 	args := AppendEntriesArgs{rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, entries, rf.commitIdx}
@@ -110,24 +112,27 @@ func(rf *Raft) Sync(server int) (bool, uint64) {
 		return false, 0
 	}
 
+
 	rf.pLocks[server].Lock()
-	defer rf.pLocks[server].Unlock()
 	if reply.Success {
 		matchedLogIdx = matchedLogIdx + uint64(len(entries))
-		if rf.matchIdx[server] != matchedLogIdx{
-			Trace.Printf("%v matched become %v\n", server, matchedLogIdx)
+		if rf.matchIdx[server] < matchedLogIdx{
+			Trace.Printf("%v matched become %v, leader is %v\n", server, matchedLogIdx, rf.me)
+			rf.matchIdx[server] = matchedLogIdx
+			rf.nextIdx[server] = matchedLogIdx + 1
 		}
-		rf.matchIdx[server] = matchedLogIdx
-		rf.nextIdx[server] = matchedLogIdx + 1
-
 	} else if reply.Term == rf.currentTerm {
-		if matchedLogIdx == 0 {
-			//log.Fatalln("matchedLogIdx: 0, fail")
-		}else {
-			rf.nextIdx[server] = matchedLogIdx
+		if reply.CommitId > uint64(len(rf.log)) {
+			Error.Fatalln("follower commit more than leader")
 		}
+		rf.matchIdx[server] = reply.CommitId
+		rf.nextIdx[server] = reply.CommitId + 1
 	}
-	rf.LeaderCommit()
+
+	rf.pLocks[server].Unlock()
+	if reply.Success {
+		rf.LeaderCommit()
+	}
 
 	return true, reply.Term
 }
