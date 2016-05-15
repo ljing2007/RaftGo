@@ -25,7 +25,6 @@ import (
 	"math/rand"
 	"io/ioutil"
 	"os"
-	"io"
 )
 
 const dbg bool = false
@@ -387,13 +386,12 @@ func (rf *Raft) Kill() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	
-	var trace_out io.Writer
 	if !dbg {
-		trace_out = ioutil.Discard
+		InitLogger(ioutil.Discard, ioutil.Discard, ioutil.Discard, ioutil.Discard)
 	}else {
-		trace_out = os.Stdout
+		InitLogger(os.Stdout, os.Stdout, os.Stdout, os.Stderr)
 	}
-	InitLogger(trace_out, os.Stdout, os.Stdout, os.Stderr)
+
 	rf := &Raft{}
 
 	rf.mu.Lock()

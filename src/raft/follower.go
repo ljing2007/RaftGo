@@ -33,11 +33,6 @@ func (rf *Raft) HeartBeatTimer() {
 					// stale heart beat
 					// ignore and continue the loop
 					log.Println("%v receive a stale heartbeat")
-				}else if rf.votedFor.LeaderId != -1 && rf.votedFor.Term == msg.Term &&
-				rf.votedFor.LeaderId != msg.LeaderId {
-					// illegal state
-					log.Fatalf("there are 2 leaders in the same Term. Term: %v, leader 1 %v leader 2 %v\n",
-						rf.currentTerm, rf.votedFor, msg.LeaderId)
 				}else {
 					// receive a legal heartbeat
 					// break the loop to wait next heartBeat

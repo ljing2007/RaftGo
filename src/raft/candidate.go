@@ -122,11 +122,14 @@ func (rf *Raft) Election(electionTerm uint64) {
 			rf.nextIdx = make([]uint64, len(rf.peers))
 			rf.matchIdx = make([]uint64, len(rf.peers))
 			for i := 0; i < len(rf.peers); i++ {
+				if i == rf.me {
+					continue
+				}
 				rf.nextIdx[i] = uint64(len(rf.log))
 				rf.matchIdx[i] = 0
 			}
 			rf.mu.Unlock()
-			Trace.Printf("candidate %v becomes leader in Term %v\n", rf.me, rf.currentTerm)
+			Info.Printf("candidate %v becomes leader in Term %v\n", rf.me, rf.currentTerm)
 			go rf.BroadcastHeartBeat()
 
 			return

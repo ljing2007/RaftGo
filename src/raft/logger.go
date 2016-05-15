@@ -3,6 +3,7 @@ package raft
 import (
 	"log"
 	"io"
+	"io/ioutil"
 )
 
 var (
@@ -12,6 +13,7 @@ var (
 	Error   *log.Logger
 )
 
+// init logger
 func InitLogger(traceHandle io.Writer, infoHandle io.Writer, warningHandle io.Writer, errorHandle io.Writer) {
 	Trace = log.New(traceHandle,
 		"TRACE: ", log.Ldate|log.Ltime|log.Lshortfile)
@@ -26,3 +28,17 @@ func InitLogger(traceHandle io.Writer, infoHandle io.Writer, warningHandle io.Wr
 		"ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 }
 
+
+func DisableLogger() {
+	Trace.SetOutput(ioutil.Discard)
+	Info.SetOutput(ioutil.Discard)
+	Warning.SetOutput(ioutil.Discard)
+	Error.SetOutput(ioutil.Discard)
+}
+
+func EnableLogger(traceHandle io.Writer, infoHandle io.Writer, warningHandle io.Writer, errorHandle io.Writer) {
+	Trace.SetOutput(traceHandle)
+	Info.SetOutput(infoHandle)
+	Warning.SetOutput(warningHandle)
+	Error.SetOutput(errorHandle)
+}
