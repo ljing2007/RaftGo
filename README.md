@@ -4,6 +4,9 @@ A project for learning Golang.
 Forked from [MIT's 6.824 (Distributed System)](https://pdos.csail.mit.edu/6.824/), original code: git://g.csail.mit.edu/6.824-golabs-2016
 
 ## Directory Tree
+* src/kvraft: a Key-Value store based on Raft
+	* under develop
+
 * src/raft: implementation of [**The Raft Consensus Algorithm**](http://web.stanford.edu/~ouster/cgi-bin/papers/raft-atc14)
 	* almost supports all features described in the paper:
 		* leader election
