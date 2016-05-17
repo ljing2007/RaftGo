@@ -6,7 +6,7 @@ import (
 )
 
 
-func(rf *Raft) LeaderCommit() {
+func(rf *Raft) leaderCommit() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -76,7 +76,7 @@ func(rf *Raft) LeaderCommit() {
 }
 
 
-func(rf *Raft) Sync(server int) (bool, uint64) {
+func(rf *Raft) sync(server int) (bool, uint64) {
 	rf.pLocks[server].Lock()
 
 	//rf.mu.Lock()
@@ -131,14 +131,14 @@ func(rf *Raft) Sync(server int) (bool, uint64) {
 
 	rf.pLocks[server].Unlock()
 	if reply.Success {
-		rf.LeaderCommit()
+		rf.leaderCommit()
 	}
 
 	return true, reply.Term
 }
 
 // used by leader to send out heartbeat
-func (rf *Raft) BroadcastHeartBeat() {
+func (rf *Raft) broadcastHeartBeat() {
 	waitTime := time.Duration(HEARTBEATINTERVAL)
 	for {
 		if rf.role != LEADER {
@@ -162,7 +162,7 @@ func (rf *Raft) BroadcastHeartBeat() {
 				continue
 			}
 			go func(server int) {
-				ok, term := rf.Sync(server)
+				ok, term := rf.sync(server)
 				if ok && term > rf.currentTerm {
 					staleSignal <- true
 				}
@@ -184,7 +184,7 @@ func (rf *Raft) BroadcastHeartBeat() {
 			// rf.matchIdx = nil
 				rf.mu.Unlock()
 				Trace.Printf("leader %v is stale, turns to follower\n", rf.me)
-				go rf.HeartBeatTimer()
+				go rf.heartBeatTimer()
 				return
 			case msg := <-rf.heartBeatCh:
 			// get a heart beat from others
@@ -202,7 +202,7 @@ func (rf *Raft) BroadcastHeartBeat() {
 					rf.matchIdx = nil
 					rf.mu.Unlock()
 					Trace.Printf("leader %v finds a superior leader %v, turns to follower\n", rf.me, rf.votedFor)
-					go rf.HeartBeatTimer()
+					go rf.heartBeatTimer()
 					return
 				}
 

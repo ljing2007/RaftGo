@@ -7,7 +7,7 @@ import (
 
 
 // used by follower
-func (rf *Raft) HeartBeatTimer() {
+func (rf *Raft) heartBeatTimer() {
 	// in the same Term, we use the same timeout
 	waitTime := time.Duration(HEARTHEATTIMEOUTBASE + rf.rand.Intn(HEARTBEATTIMEOUTRANGE))
 
@@ -48,7 +48,7 @@ func (rf *Raft) HeartBeatTimer() {
 			case <-timeout:
 			// time out, end the heartbeat timer
 			// and fire a new election Term
-				go rf.Election(rf.currentTerm + 1)
+				go rf.election(rf.currentTerm + 1)
 				return
 			}
 		}

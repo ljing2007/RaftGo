@@ -7,7 +7,7 @@ import (
 
 
 // issued a new election Term to become leader, by a candidate
-func (rf *Raft) Election(electionTerm uint64) {
+func (rf *Raft) election(electionTerm uint64) {
 	// turn into candidate
 	// increase current Term
 	// vote for myself
@@ -53,7 +53,7 @@ func (rf *Raft) Election(electionTerm uint64) {
 	winSignal := make(chan bool, 1)
 	// signal: my current Term is out of date
 	staleSignal := make(chan *RequestVoteReply, 1)
-	failSingal := make(chan bool)
+	failSignal := make(chan bool)
 	go func(){
 		// get an approve from myself
 		approveNum := 1
@@ -77,7 +77,7 @@ func (rf *Raft) Election(electionTerm uint64) {
 
 				denyNum++
 				if denyNum > len(rf.peers) / 2 {
-					failSingal <- true
+					failSignal <- true
 					break
 				}
 
@@ -113,7 +113,7 @@ func (rf *Raft) Election(electionTerm uint64) {
 			rf.role = FOLLOWER
 			rf.votedFor = TermLeader{msg.Term, msg.LeaderId}
 			rf.mu.Unlock()
-			go rf.HeartBeatTimer()
+			go rf.heartBeatTimer()
 			Trace.Printf("candidate %v becomes follower\n", rf.me)
 			return
 		case <-winSignal:
@@ -132,16 +132,16 @@ func (rf *Raft) Election(electionTerm uint64) {
 			}
 			rf.mu.Unlock()
 			Info.Printf("candidate %v becomes leader in Term %v\n", rf.me, rf.currentTerm)
-			go rf.BroadcastHeartBeat()
+			go rf.broadcastHeartBeat()
 
 			return
-		case <- failSingal:
+		case <- failSignal:
 			rf.mu.Lock()
 			rf.role = FOLLOWER
 			rf.votedFor = TermLeader{rf.currentTerm, -1}
 			rf.mu.Unlock()
 			rf.persist()
-			go rf.HeartBeatTimer()
+			go rf.heartBeatTimer()
 			return
 
 		case reply := <-staleSignal:
@@ -155,12 +155,12 @@ func (rf *Raft) Election(electionTerm uint64) {
 			rf.votedFor = TermLeader{reply.Term, -1}
 			rf.mu.Unlock()
 			rf.persist()
-			go rf.HeartBeatTimer()
+			go rf.heartBeatTimer()
 			return
 		case <-timeout:
 		// fire another election Term
 			Trace.Printf("election timeout in candidate %v term %v\n", rf.me, rf.currentTerm)
-			go rf.Election(electionTerm + 1)
+			go rf.election(electionTerm + 1)
 			return
 		}
 	}

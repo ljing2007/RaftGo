@@ -335,11 +335,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return -1, -1, false
 	}
 
-	for idx, entry := range rf.log {
-		if entry.Command == command {
-			return idx, int(entry.Term), true
-		}
-	}
+	//for idx, entry := range rf.log {
+	//	if entry.Command == command {
+	//		return idx, int(entry.Term), true
+	//	}
+	//}
 
 	index := len(rf.log)
 	Term := rf.currentTerm
@@ -356,7 +356,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			continue
 		}
 
-		go rf.Sync(i)
+		go rf.sync(i)
 	}
 
 	//Info.Printf("new entry %v start in leader %v, index %v, term %v, log size %v\n", command, rf.me, index, Term, len(rf.log))
@@ -429,6 +429,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	Info.Printf("new server %v is up, log size %v\n", me, len(rf.log))
 	// begin from follower, expect to receive heartbeat
-	go rf.HeartBeatTimer()
+	go rf.heartBeatTimer()
 	return rf
 }
