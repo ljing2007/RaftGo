@@ -96,6 +96,8 @@ func (rf *Raft) Election(electionTerm uint64) {
 	// loop until win, fail, or timeout
 	for {
 		select {
+		case <- rf.kill:
+			return
 		case msg := <- rf.heartBeatCh:
 			if msg.Term < rf.currentTerm {
 				// receive stale heartbeat

@@ -101,6 +101,8 @@ type Raft struct {
 	rand 	*rand.Rand
 	role 	Role
 
+	// kill signal
+	kill	chan bool
 }
 
 // return currentTerm and whether this server
@@ -368,7 +370,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // turn off debug output from this instance.
 //
 func (rf *Raft) Kill() {
-	// Your code here, if desired.
+	rf.kill<-true
 }
 
 
@@ -421,6 +423,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	// init kill signal
+	rf.kill = make(chan bool, 1)
 
 	Info.Printf("new server %v is up, log size %v\n", me, len(rf.log))
 	// begin from follower, expect to receive heartbeat

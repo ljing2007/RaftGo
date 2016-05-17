@@ -28,6 +28,8 @@ func (rf *Raft) HeartBeatTimer() {
 		endLoop := false
 		for !endLoop {
 			select {
+			case <- rf.kill:
+				return
 			case msg := <-rf.heartBeatCh:
 				if rf.currentTerm > msg.Term {
 					// stale heart beat

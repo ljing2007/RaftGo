@@ -173,6 +173,8 @@ func (rf *Raft) BroadcastHeartBeat() {
 		endLoop := false
 		for !endLoop{
 			select {
+			case <-rf.kill:
+				return;
 			case <-staleSignal:
 			// my Term is stale
 			// convert to follower stage
