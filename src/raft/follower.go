@@ -2,7 +2,6 @@ package raft
 
 import (
 	"time"
-	"log"
 )
 
 
@@ -14,7 +13,7 @@ func (rf *Raft) heartBeatTimer() {
 	for {
 
 		if rf.role != FOLLOWER {
-			log.Fatalln("call heartBeatTimer, but I'm not a follower")
+			rf.logger.Error.Fatalln("call heartBeatTimer, but I'm not a follower")
 		}
 
 		timeout := make(chan bool, 1)
@@ -34,7 +33,7 @@ func (rf *Raft) heartBeatTimer() {
 				if rf.currentTerm > msg.Term {
 					// stale heart beat
 					// ignore and continue the loop
-					log.Println("%v receive a stale heartbeat")
+					rf.logger.Trace.Println("%v receive a stale heartbeat", rf.me)
 				}else {
 					// receive a legal heartbeat
 					// break the loop to wait next heartBeat

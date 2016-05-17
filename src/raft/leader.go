@@ -21,7 +21,7 @@ func(rf *Raft) leaderCommit() {
 		}else if rf.log[i].Term < rf.currentTerm {
 			break
 		}else {
-			Error.Fatal("get term %v > current term %v\n", rf.log[i].Term, rf.currentTerm)
+			rf.logger.Error.Fatal("get term %v > current term %v\n", rf.log[i].Term, rf.currentTerm)
 		}
 	}
 
@@ -61,12 +61,12 @@ func(rf *Raft) leaderCommit() {
 	}
 
 	cId := rf.commitIdx + 1
-	//Trace.Printf("leader %v upperbound %v min %v\n", rf.me, upperBound, minIdx)
+	//rf.logger.Trace.Printf("leader %v upperbound %v min %v\n", rf.me, upperBound, minIdx)
 	for cId <= upperBound {
 		if cId >= uint64(len(rf.log)) {
-			Error.Fatalln("out of bound")
+			rf.logger.Error.Fatalln("out of bound")
 		}
-		Trace.Printf("leader %v commit %v %v", rf.me, cId, rf.log[cId])
+		rf.logger.Trace.Printf("leader %v commit %v %v", rf.me, cId, rf.log[cId])
 		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId].Command, false, nil}
 		rf.commitIdx = cId
 		rf.persist()
@@ -89,7 +89,7 @@ func(rf *Raft) sync(server int) (bool, uint64) {
 		if matchedLogIdx + 1 < uint64(len(rf.log)){
 
 		}else {
-			Trace.Printf("%v matched to %v, log len in master %v %v\n", server, matchedLogIdx, rf.me, len(rf.log))
+			rf.logger.Trace.Printf("%v matched to %v, log len in master %v %v\n", server, matchedLogIdx, rf.me, len(rf.log))
 		}
 
 	}else {
@@ -103,6 +103,7 @@ func(rf *Raft) sync(server int) (bool, uint64) {
 	matchedTermIdx := rf.log[matchedLogIdx].Term
 	//args := makeAppendEntriesArgs(rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, Entry{}, rf.commitIdx)
 	args := AppendEntriesArgs{rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, entries, rf.commitIdx}
+	rf.logger.Trace.Printf("leader %v send %v to %v\n", rf.me, args, server)
 	reply := new(AppendEntriesReply)
 	ok := rf.sendAppendEntries(server, args, reply)
 
@@ -117,13 +118,13 @@ func(rf *Raft) sync(server int) (bool, uint64) {
 	if reply.Success {
 		matchedLogIdx = matchedLogIdx + uint64(len(entries))
 		if rf.matchIdx[server] < matchedLogIdx{
-			Trace.Printf("%v matched become %v, leader is %v\n", server, matchedLogIdx, rf.me)
+			rf.logger.Trace.Printf("%v matched become %v, leader is %v\n", server, matchedLogIdx, rf.me)
 			rf.matchIdx[server] = matchedLogIdx
 			rf.nextIdx[server] = matchedLogIdx + 1
 		}
 	} else if reply.Term == rf.currentTerm {
 		if reply.CommitId > uint64(len(rf.log)) {
-			Error.Fatalln("follower commit more than leader")
+			rf.logger.Error.Fatalln("follower commit more than leader")
 		}
 		rf.matchIdx[server] = reply.CommitId
 		rf.nextIdx[server] = reply.CommitId + 1
@@ -183,7 +184,7 @@ func (rf *Raft) broadcastHeartBeat() {
 			// rf.nextIdx = nil
 			// rf.matchIdx = nil
 				rf.mu.Unlock()
-				Trace.Printf("leader %v is stale, turns to follower\n", rf.me)
+				rf.logger.Trace.Printf("leader %v is stale, turns to follower\n", rf.me)
 				go rf.heartBeatTimer()
 				return
 			case msg := <-rf.heartBeatCh:
@@ -201,7 +202,7 @@ func (rf *Raft) broadcastHeartBeat() {
 					rf.nextIdx = nil
 					rf.matchIdx = nil
 					rf.mu.Unlock()
-					Trace.Printf("leader %v finds a superior leader %v, turns to follower\n", rf.me, rf.votedFor)
+					rf.logger.Trace.Printf("leader %v finds a superior leader %v, turns to follower\n", rf.me, rf.votedFor)
 					go rf.heartBeatTimer()
 					return
 				}

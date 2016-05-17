@@ -73,6 +73,8 @@ type ApplyMsg struct {
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
+	log		[]Entry
+
 	mu        sync.Mutex
 	peers     []*labrpc.ClientEnd
 	persister *Persister
@@ -84,7 +86,7 @@ type Raft struct {
 	// persist
 	currentTerm 	uint64
 	votedFor	TermLeader
-	log		[]Entry
+
 
 	// mutable
 	commitIdx	uint64
@@ -103,6 +105,9 @@ type Raft struct {
 
 	// kill signal
 	kill	chan bool
+	
+	// rf.logger.Infomation logger
+	logger 	Logger
 }
 
 // return currentTerm and whether this server
@@ -189,7 +194,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 
 	if rf.currentTerm > args.Term || rf.votedFor.Term > args.Term {
 		// candidate's Term is stale
-		Trace.Printf("%v denies the vote from %v because stale\n", rf.me, args.CandidateId)
+		rf.logger.Trace.Printf("%v denies the vote from %v because stale\n", rf.me, args.CandidateId)
 		deny = true
 	}else if lastLogTermV > args.LastLogTerm ||
 			(lastLogTermV == args.LastLogTerm &&
@@ -197,11 +202,11 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		// voting server's log is more complete ||
 		// (lastTermV > lastTermC) ||
 		// (lastTermV == lastTermC) && (lastIndexV > lastIndexC)
-		Trace.Printf("%v denies the vote from %v because more complete\n", rf.me, args.CandidateId)
+		rf.logger.Trace.Printf("%v denies the vote from %v because more complete\n", rf.me, args.CandidateId)
 		deny = true
 	}else if rf.votedFor.Term == args.Term && rf.votedFor.LeaderId >= 0 {
 		// in this Term, voting server has already vote for someone
-		Trace.Printf("%v denies the vote from %v because already vote\n", rf.me, args.CandidateId)
+		rf.logger.Trace.Printf("%v denies the vote from %v because already vote\n", rf.me, args.CandidateId)
 		deny = true
 	}
 
@@ -217,7 +222,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	rf.votedFor = TermLeader{args.Term, args.CandidateId}
 
-	Trace.Printf("%v term %v vote for %v term %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
+	rf.logger.Trace.Printf("%v term %v vote for %v term %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 	rf.persist()
 	return
 }
@@ -225,7 +230,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	Trace.Printf("%v term %v receive appendEntries from %v term %v, entry len %v, checkIdx %v\n", rf.me, rf.votedFor, args.LeaderId, args.Term, len(args.Entries), args.PrevLogIdx)
+	rf.logger.Trace.Printf("%v term %v receive appendEntries from %v term %v, entry len %v, checkIdx %v\n", rf.me, rf.votedFor, args.LeaderId, args.Term, len(args.Entries), args.PrevLogIdx)
 
 	//if args.Term == rf.votedFor.Term && args.LeaderId != rf.votedFor.LeaderId &&
 	//	rf.role == FOLLOWER && rf.votedFor.LeaderId != -1 {
@@ -236,7 +241,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		// msg's term is stale
 		reply.Success = false
 		reply.Term = rf.currentTerm
-		Trace.Printf("%v got a stale term from %v\n", rf.me, args.LeaderId)
+		rf.logger.Trace.Printf("%v, term %v got a stale term from %v term %v\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 		return
 	}
 
@@ -253,12 +258,12 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		reply.CommitId = rf.commitIdx
-		Trace.Printf("appendEngries in %v check consistency fail", rf.me)
+		rf.logger.Trace.Printf("appendEngries in %v check consistency fail", rf.me)
 		return
 	}
 
 	if rf.commitIdx > logIdxCheck {
-		Trace.Printf("try to delete committed entry in %v, get %v from %v, here %v, leader %v\n", rf.me, logIdxCheck, args.LeaderId, rf.commitIdx, rf.votedFor.LeaderId)
+		rf.logger.Trace.Printf("try to delete committed entry in %v, get %v from %v, here %v, leader %v\n", rf.me, logIdxCheck, args.LeaderId, rf.commitIdx, rf.votedFor.LeaderId)
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		reply.CommitId = rf.commitIdx
@@ -276,7 +281,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			break
 		}
 		rf.commitIdx = cId
-		Trace.Printf("follower %v commit %v %v", rf.me, cId, rf.log[cId])
+		rf.logger.Trace.Printf("follower %v commit %v %v", rf.me, cId, rf.log[cId])
 		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId].Command, false, nil}
 	}
 
@@ -349,6 +354,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.matchIdx[rf.me] = uint64(len(rf.log)) - 1
 	rf.nextIdx[rf.me] = uint64(len(rf.log))
 
+	rf.logger.Trace.Printf("start a new cmd in server %v term %v\n", rf.me, rf.currentTerm)
 	rf.persist()
 
 	for i := 0; i < len(rf.peers); i++ {
@@ -359,7 +365,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		go rf.sync(i)
 	}
 
-	//Info.Printf("new entry %v start in leader %v, index %v, term %v, log size %v\n", command, rf.me, index, Term, len(rf.log))
+	//rf.logger.Info.Printf("new entry %v start in leader %v, index %v, term %v, log size %v\n", command, rf.me, index, Term, len(rf.log))
 	return index, int(Term), true
 }
 
@@ -388,14 +394,14 @@ func (rf *Raft) Kill() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	
-	if !dbg {
-		InitLogger(ioutil.Discard, ioutil.Discard, ioutil.Discard, ioutil.Discard)
-	}else {
-		InitLogger(os.Stdout, os.Stdout, os.Stdout, os.Stderr)
-	}
-
 	rf := &Raft{}
 
+	if !dbg {
+		rf.logger.InitLogger(ioutil.Discard, ioutil.Discard, os.Stderr, os.Stderr)
+	}else {
+		rf.logger.InitLogger(os.Stdout, os.Stdout, os.Stdout, os.Stderr)
+	}
+	
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -427,7 +433,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// init kill signal
 	rf.kill = make(chan bool, 1)
 
-	Info.Printf("new server %v is up, log size %v\n", me, len(rf.log))
+	rf.logger.Info.Printf("new server %v is up, log size %v\n", me, len(rf.log))
 	// begin from follower, expect to receive heartbeat
 	go rf.heartBeatTimer()
 	return rf
