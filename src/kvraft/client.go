@@ -2,12 +2,17 @@ package raftkv
 
 import "labrpc"
 import "crypto/rand"
-import "math/big"
+import (
+	"math/big"
+)
+//import "sync/atomic"
 
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
-	// You will have to modify this struct.
+	leader 	int	//raft leader index
+	me 	int64	// client id
+	reqId 	int64	// increasing monotonically
 }
 
 func nrand() int64 {
@@ -20,9 +25,36 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	// You'll have to add code here.
+
+	ck.leader = 0
+	ck.me = nrand()
 	return ck
 }
+
+// keep sending the request to server, until get reply successfully
+func (ck *Clerk) execute(req Op) string{
+	//req.ClientId = ck.me
+	//req.RequestId = atomic.AddInt64(&ck.reqId, 1)
+	req.RequestId = nrand()
+
+	i := ck.leader	// start from last saved leader id
+	n := len(ck.servers)	// n stands for server num
+	for {
+		var reply Reply
+		ok := ck.servers[i].Call("RaftKV.ExecuteRequest", req, &reply)
+
+		if ok && reply.Success {
+			// get reply successfully
+			// update ck.leader and return value
+			ck.leader = i
+			return reply.Value
+		}else {
+			// fail, try next server
+			i = (i + 1) % n
+		}
+	}
+}
+
 
 //
 // fetch the current value for a key.
@@ -39,7 +71,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	return ""
+	return ck.execute(Op{Type: GET, Key: key})
 }
 
 //
@@ -52,13 +84,10 @@ func (ck *Clerk) Get(key string) string {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 //
-func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
-}
 
 func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, "Put")
+	ck.execute(Op{Type: PUT, Key: key, Value: value})
 }
 func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, "Append")
+	ck.execute(Op{Type: APPEND, Key: key, Value: value})
 }

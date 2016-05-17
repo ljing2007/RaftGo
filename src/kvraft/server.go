@@ -6,6 +6,9 @@ import (
 	"log"
 	"raft"
 	"sync"
+	"time"
+	"os"
+	"io/ioutil"
 )
 
 const Debug = 0
@@ -18,11 +21,12 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 
-type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
+type PendingOps struct {
+	Req Op
+	Success chan bool
 }
+
+
 
 type RaftKV struct {
 	mu      sync.Mutex
@@ -33,15 +37,74 @@ type RaftKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	data	map[string]string
+	pendingOps	map[int]*PendingOps
+
+	logger	raft.Logger
+}
+
+func (kv *RaftKV) receiveApply() {
+	for {
+		msg := <-kv.applyCh
+
+		kv.logger.Trace.Printf("get apply: %v in server %v\n", msg, kv.me)
+
+		idx, req := msg.Index, msg.Command.(Op)
+
+		op, ok := kv.pendingOps[idx]
+
+		if !ok {
+			kv.logger.Trace.Println("server %v doesn't have this pending op")
+			continue
+		}
+
+		if op.Req.RequestId != req.RequestId {
+			op.Success <- false
+		}else {
+			switch op.Req.Type {
+			case PUT:
+				kv.data[op.Req.Key] = op.Req.Value
+			case APPEND:
+				kv.data[op.Req.Key] += op.Req.Value
+			}
+			op.Success <- true
+		}
+		delete(kv.pendingOps, idx)
+	}
 }
 
 
-func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
-}
+func (kv *RaftKV) ExecuteRequest(args Op, reply *Reply) {
+	idx, _, ok := kv.rf.Start(args)
+	if !ok {
+		reply.Success = false
+		return;
+	}
 
-func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	kv.logger.Trace.Printf("start %v in %v, is leader: %v, idx %v\n", args, kv.me, ok, idx)
+
+	op := new(PendingOps)
+	op.Req = args
+	op.Success = make(chan bool, 1)
+
+	if val, ok := kv.pendingOps[idx]; ok {
+		val.Success <- false
+	}
+	kv.pendingOps[idx] = op
+
+	timmer := time.NewTimer(time.Second * 3)
+	select {
+	case <-timmer.C:
+		reply.Success = false
+		kv.logger.Trace.Println("time out")
+		return
+	case ok = <- op.Success:
+		reply.Success = ok
+		if ok && args.Type == GET {
+			reply.Value = kv.data[args.Key]
+		}
+		return
+	}
 }
 
 //
@@ -71,6 +134,8 @@ func (kv *RaftKV) Kill() {
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *RaftKV {
 	// call gob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
+
+
 	gob.Register(Op{})
 
 	kv := new(RaftKV)
@@ -82,6 +147,14 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
+	kv.data = make(map[string]string)
+	kv.pendingOps = make(map[int]*PendingOps)
 
+	if Debug > 0 {
+		kv.logger.InitLogger(os.Stdout, os.Stdout, os.Stderr, os.Stderr)
+	}else {
+		kv.logger.InitLogger(ioutil.Discard, ioutil.Discard, os.Stderr, os.Stderr)
+	}
+	go kv.receiveApply()
 	return kv
 }
