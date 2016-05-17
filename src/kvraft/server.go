@@ -36,13 +36,13 @@ type RaftKV struct {
 
 	maxraftstate int // snapshot if log grows this big
 
-	// Your definitions here.
-	data	map[string]string
-	pendingOps	map[int]*PendingOps
+	data	map[string]string	// kv store data
+	pendingOps	map[int]*PendingOps	// pending requests
 
 	logger	raft.Logger
 }
 
+// get a committed msg from Raft
 func (kv *RaftKV) receiveApply() {
 	for {
 		msg := <-kv.applyCh
@@ -51,10 +51,13 @@ func (kv *RaftKV) receiveApply() {
 
 		idx, req := msg.Index, msg.Command.(Op)
 
+		kv.mu.Lock()
+
 		op, ok := kv.pendingOps[idx]
 
 		if !ok {
 			kv.logger.Trace.Println("server %v doesn't have this pending op")
+			kv.mu.Unlock()
 			continue
 		}
 
@@ -70,29 +73,38 @@ func (kv *RaftKV) receiveApply() {
 			op.Success <- true
 		}
 		delete(kv.pendingOps, idx)
+		kv.mu.Unlock()
 	}
 }
 
-
+// response to the client request
 func (kv *RaftKV) ExecuteRequest(args Op, reply *Reply) {
+
+	// send the request to raft
 	idx, _, ok := kv.rf.Start(args)
 	if !ok {
+		// I'm not leader, reject this reuest
 		reply.Success = false
 		return;
 	}
 
 	kv.logger.Trace.Printf("start %v in %v, is leader: %v, idx %v\n", args, kv.me, ok, idx)
 
+	// save this request to pending ops
 	op := new(PendingOps)
 	op.Req = args
 	op.Success = make(chan bool, 1)
 
+	kv.mu.Lock()
 	if val, ok := kv.pendingOps[idx]; ok {
 		val.Success <- false
+		kv.logger.Warning.Println("alraedy have a log in this idx")
 	}
 	kv.pendingOps[idx] = op
+	kv.mu.Unlock()
 
-	timmer := time.NewTimer(time.Second * 3)
+	// whether timing out or executed successfully
+	timmer := time.NewTimer(time.Second)
 	select {
 	case <-timmer.C:
 		reply.Success = false
