@@ -40,6 +40,7 @@ type RaftKV struct {
 	rf      *raft.Raft
 	persister *raft.Persister
 	applyCh chan raft.ApplyMsg
+	kill	chan bool
 
 	maxraftstate int // snapshot if log grows this big
 
@@ -48,57 +49,62 @@ type RaftKV struct {
 }
 
 // get a committed msg from Raft
-func (kv *RaftKV) receiveApply() {
-	for {
-		msg := <-kv.applyCh
+func (kv *RaftKV) receiveApply(msg *raft.ApplyMsg) {
 
-		kv.logger.Trace.Printf("get apply: %v in server %v\n", msg, kv.me)
+	kv.logger.Trace.Printf("get apply: %+v in server %v\n", msg, kv.me)
 
-		idx, req := msg.Index, msg.Command.(Op)
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 
-		kv.mu.Lock()
-
-		op, p_ok := kv.pendingOps[idx]
-		stamp, s_ok := kv.stamps[req.ClientId]
-
-		if (s_ok && stamp >= req.RequestId) {
-			// already execute this cmd, ignore it
-			// kv.logger.Warning.Printf("get stale cmd, server's stamp %v, req's stamp %v\n", stamp, req.RequestId)
-		} else {
-			// haven't execute this request
-			kv.logger.Trace.Printf("req type %v\n", req.Type)
-			switch req.Type {
-			case PUT:
-				kv.data[req.Key] = req.Value
-			case APPEND:
-				kv.data[req.Key] += req.Value
-			}
-			kv.stamps[req.ClientId] = req.RequestId
-		}
-
-		if !p_ok {
-			kv.mu.Unlock()
-			continue
-		}
-
-		// it the request is sent to this server, send back execute result
-		if op.Req.RequestId != req.RequestId || op.Req.ClientId != req.ClientId {
-			op.Success <- false
-		}else {
-			if op.Req.Type == GET {
-				op.Req.Value = kv.data[op.Req.Key]
-			}
-			op.Success <- true
-		}
-		delete(kv.pendingOps, idx)
-
-		if kv.maxraftstate > 0 && kv.raftStateSize() {
-			// exceed threshold, doing snapshot
-			kv.saveSnapShot()
-			kv.rf.DeleteOldEntries(idx)
-		}
-		kv.mu.Unlock()
+	if msg.UseSnapshot {
+		kv.loadSnapShot(msg.Snapshot)
+		return
 	}
+
+	idx, req := msg.Index, msg.Command.(Op)
+
+	op, p_ok := kv.pendingOps[idx]
+	stamp, s_ok := kv.stamps[req.ClientId]
+
+	if (s_ok && stamp >= req.RequestId) {
+		// already execute this cmd, ignore it
+		// kv.logger.Warning.Printf("get stale cmd, server's stamp %v, req's stamp %v\n", stamp, req.RequestId)
+	} else {
+		// haven't execute this request
+		kv.logger.Trace.Printf("req type %v\n", req.Type)
+		switch req.Type {
+		case PUT:
+			kv.data[req.Key] = req.Value
+		case APPEND:
+			kv.data[req.Key] += req.Value
+		}
+		kv.stamps[req.ClientId] = req.RequestId
+	}
+
+	// check state size to make snapshot
+	stateSize := kv.raftStateSize()
+	if kv.maxraftstate > 0 && stateSize > kv.maxraftstate {
+		// exceed threshold, doing snapshot
+		kv.logger.Info.Printf("server %v making snapshot\n", kv.me)
+		kv.saveSnapShot()
+		kv.rf.DeleteOldEntries(idx, stateSize)
+	}
+
+	// check whether need to reply GET op
+	if !p_ok {
+		return
+	}
+
+	// it the request is sent to this server, send back execute result
+	if op.Req.RequestId != req.RequestId || op.Req.ClientId != req.ClientId {
+		op.Success <- false
+	}else {
+		if op.Req.Type == GET {
+			op.Req.Value = kv.data[op.Req.Key]
+		}
+		op.Success <- true
+	}
+	delete(kv.pendingOps, idx)
 }
 
 // response to the client request
@@ -128,11 +134,11 @@ func (kv *RaftKV) ExecuteRequest(args Op, reply *Reply) {
 	kv.mu.Unlock()
 
 	// whether timing out or executed successfully
-	timmer := time.NewTimer(time.Second)
+	timmer := time.NewTimer(time.Second * 2)
 	select {
 	case <-timmer.C:
 		reply.Success = false
-		kv.logger.Warning.Printf("time out for the args %+v\n", args)
+		kv.logger.Trace.Printf("time out for the args %+v\n", args)
 		return
 	case ok = <- op.Success:
 		reply.Success = ok
@@ -176,7 +182,7 @@ func (kv *RaftKV) loadSnapShot(data []byte) {
 //
 func (kv *RaftKV) Kill() {
 	kv.rf.Kill()
-	// Your code here, if desired.
+	kv.kill <- true
 }
 
 //
@@ -200,11 +206,14 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	gob.Register(Op{})
 
 	kv := new(RaftKV)
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 	kv.persister = persister
 
 	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.kill = make(chan bool, 1)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	kv.data = make(map[string]string)
@@ -218,6 +227,17 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	}
 
 
-	go kv.receiveApply()
+	go func() {
+		for {
+			select {
+			case msg := <- kv.applyCh:
+				kv.receiveApply(&msg)
+			case <- kv.kill:
+				return
+
+			}
+
+		}
+	}()
 	return kv
 }

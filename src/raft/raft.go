@@ -186,6 +186,7 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term 	uint64
 	CommitId uint64
+	LogSize	int	// for debug
 	Success bool
 }
 
@@ -230,6 +231,10 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	reply.Term = rf.currentTerm
 	rf.votedFor = TermLeader{args.Term, args.CandidateId}
 
+	if rf.commitIdx > args.LastLogIdx {
+		rf.logger.Warning.Printf("follower's last term %v lastIdx %v commitIdx %v, requester last term %v, lastIdx %v\n", lastLogTermV, lastLogIdxV, rf.commitIdx, args.LastLogTerm, args.LastLogIdx)
+	}
+
 	rf.logger.Trace.Printf("%v term %v vote for %v term %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 	rf.persist()
 	return
@@ -262,21 +267,22 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	logIdxCheck := args.PrevLogIdx
 	logTermCheck := args.PrevLogTerm
 
-	if logIdxCheck > uint64(len(rf.log)) + rf.startIdx && args.Snapshot != nil {
+	if logIdxCheck > rf.commitIdx && args.Snapshot != nil {
+		rf.logger.Info.Printf("server %v receive a snapshot\n", rf.me)
 		rf.persister.SaveSnapshot(args.Snapshot)
 		rf.startIdx = logIdxCheck
+		rf.startTerm = logTermCheck
 		rf.applyCh <- ApplyMsg{0, nil, true, args.Snapshot}
 
 		if args.LeaderCommit <= logIdxCheck {
-			rf.logger.Error.Println("leader's commitIdx <= its startIdx")
+			rf.logger.Error.Fatalln("leader's commitIdx <= its startIdx")
 		}
 
 		rf.log = args.Entries
 		if len(rf.log) <= 0 {
-			rf.logger.Error.Println("append snapshot but empty log entries")
+			rf.logger.Error.Fatalln("append snapshot but empty log entries")
 		}
-		rf.applyCh <- ApplyMsg{int(rf.startIdx + 1), rf.log[0], false, nil}
-		rf.commitIdx = rf.startIdx + 1
+		rf.commitIdx = rf.startIdx
 		rf.persist()
 	}else if logIdxCheck >= uint64(len(rf.log)) + rf.startIdx || logTermCheck != rf.log[logIdxCheck - rf.startIdx].Term {
 		// consistency check fails
@@ -286,12 +292,16 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		rf.logger.Trace.Printf("appendEngries in %v check consistency fail", rf.me)
 		return
 	}else if rf.commitIdx > logIdxCheck {
-		// my log is more complete than leader's
+		// my log is more complete than leader's matching index
 		// this could happen when network is unreliable
 		rf.logger.Trace.Printf("try to delete committed entry in %v, get %v from %v, here %v, leader %v\n", rf.me, logIdxCheck, args.LeaderId, rf.commitIdx, rf.votedFor.LeaderId)
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		reply.CommitId = rf.commitIdx
+		reply.LogSize = len(rf.log) + int(rf.startIdx)
+		if rf.startIdx != 0 {
+			rf.logger.Warning.Println(rf.startIdx)
+		}
 		return;
 	}else {
 		// pass consistency check
@@ -306,37 +316,37 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			break
 		}
 		rf.commitIdx = cId
-		rf.logger.Trace.Printf("follower %v commit %v %v", rf.me, cId, rf.log[cId])
+		rf.logger.Trace.Printf("follower %v commit %v %v", rf.me, cId, rf.log[cId - rf.startIdx])
 		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId - rf.startIdx].Command, false, nil}
+		rf.persist()
 	}
-
-	rf.persist()
 	reply.Term = rf.currentTerm
 	reply.Success = true
 	return
 }
 
 
-func (rf *Raft) DeleteOldEntries (commitIdx int) {
+func (rf *Raft) DeleteOldEntries (commitIdx int, expectedSize int) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	commitIdx -= 1	// at least leave one entry for consistency check
+	oldSize := len(rf.log)
 
-	if commitIdx <= int(rf.startIdx) {
+	if commitIdx <= int(rf.startIdx) || expectedSize > rf.persister.RaftStateSize() {
 		// already deleted, ignore
+
 		return
 	}
 
 	// update info
 	rf.startTerm = rf.log[commitIdx - int(rf.startIdx)].Term
+	rf.log = rf.log[commitIdx - int(rf.startIdx) : ]	// delete old log
 	rf.startIdx = uint64(commitIdx)
-
-	// clean the log
-	rf.log = rf.log[commitIdx - int(rf.startIdx) + 1:]
 
 	// persist the updated info
 	rf.persist()
+
+	rf.logger.Info.Printf("server %v delete old entries, start idx is %v, logSize old %v new %v", rf.me, rf.startIdx, oldSize,len(rf.log))
 }
 
 //
@@ -413,8 +423,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		go rf.sync(i)
 	}
 
-	//rf.logger.Info.Printf("new entry %v start in leader %v, index %v, term %v, log size %v\n", command, rf.me, index, Term, len(rf.log))
-	return index, int(Term), true
+	rf.logger.Trace.Printf("new entry %v start in leader %v, index %v, term %v, log size %v\n", command, rf.me, index, Term, len(rf.log))
+	return index + int(rf.startIdx), int(Term), true
 }
 
 //
@@ -444,15 +454,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	
 	rf := &Raft{}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	if !dbg {
-		rf.logger.InitLogger(ioutil.Discard, ioutil.Discard, os.Stderr, os.Stderr)
+		rf.logger.InitLogger(ioutil.Discard, os.Stdout, os.Stderr, os.Stderr)
 	}else {
 		rf.logger.InitLogger(os.Stdout, os.Stdout, os.Stdout, os.Stderr)
 	}
-	
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	rf.peers = peers
 	rf.persister = persister

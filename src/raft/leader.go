@@ -21,7 +21,9 @@ func(rf *Raft) leaderCommit() {
 		}else if rf.log[i].Term < rf.currentTerm {
 			break
 		}else {
-			rf.logger.Error.Fatal("get term %v > current term %v\n", rf.log[i].Term, rf.currentTerm)
+			// already lost leadership, but haven't applied this change
+			rf.logger.Trace.Printf("get term %v > current term %v, in server %v, is leader %v\n", rf.log[i].Term, rf.currentTerm, rf.me, rf.role == LEADER)
+			return
 		}
 	}
 
@@ -80,11 +82,10 @@ func(rf *Raft) leaderCommit() {
 
 func(rf *Raft) sync(server int) (bool, uint64) {
 	rf.mu.Lock()
-	if server >= len(rf.nextIdx) {
-		rf.logger.Error.Printf("invalid mm %v %v\n", server, len(rf.nextIdx))
-	}
-	if server >= len(rf.matchIdx) {
-		rf.logger.Error.Printf("invalid mm %v %v\n", server, len(rf.matchIdx))
+
+	if rf.role != LEADER {
+		rf.mu.Unlock()
+		return false, 0
 	}
 
 	var matchedLogIdx uint64
@@ -94,11 +95,15 @@ func(rf *Raft) sync(server int) (bool, uint64) {
 	var snapshot []byte = nil
 	if rf.nextIdx[server] - 1 < rf.startIdx {
 		// a slow follower, send snapshot
+		rf.logger.Trace.Printf("server %v is a slow server, send snapshot and whole log to it\n", server)
 		matchedLogIdx = rf.startIdx
+		matchedTerm = rf.startTerm
 		snapshot = rf.persister.ReadSnapshot()
-
 		entries = rf.log
+
+		matchedLogIdx -= 1
 	}else if rf.nextIdx[server] - 1 == rf.startIdx {
+		rf.logger.Trace.Printf("server %v matched to startIdx %v\n", server, rf.nextIdx[server] - 1)
 		matchedLogIdx = rf.startIdx
 		matchedTerm = rf.startTerm
 
@@ -108,11 +113,10 @@ func(rf *Raft) sync(server int) (bool, uint64) {
 		matchedLogIdx = rf.matchIdx[server]
 
 		if matchedLogIdx + 1 < uint64(len(rf.log)) + rf.startIdx{
-
-		}else {
-			rf.logger.Trace.Printf("%v matched to %v, log len in master %v %v\n", server, matchedLogIdx, rf.me, len(rf.log))
+			entries = rf.log[matchedLogIdx - rf.startIdx + 1 : ]
+		}else if matchedLogIdx == uint64(len(rf.log)) + rf.startIdx {
+			rf.logger.Warning.Printf("%v matched to %v, log len in master %v %v\n", server, matchedLogIdx, rf.me, len(rf.log))
 		}
-		entries = rf.log[matchedLogIdx - rf.startIdx + 1 : ]
 		matchedTerm = rf.log[matchedLogIdx - rf.startIdx].Term
 	}else {
 		// haven't achieve consistency, but follower is up-to-date
@@ -124,7 +128,7 @@ func(rf *Raft) sync(server int) (bool, uint64) {
 	rf.mu.Unlock()
 
 	args := AppendEntriesArgs{rf.currentTerm, rf.me, matchedLogIdx, matchedTerm, entries, rf.commitIdx, snapshot}
-	rf.logger.Trace.Printf("leader %v send %v to %v\n", rf.me, args, server)
+	rf.logger.Trace.Printf("leader %v to %v send %+v \n", rf.me, server, args)
 	reply := new(AppendEntriesReply)
 	ok := rf.sendAppendEntries(server, args, reply)
 
@@ -134,19 +138,31 @@ func(rf *Raft) sync(server int) (bool, uint64) {
 	}
 
 	rf.mu.Lock()
+	if rf.role != LEADER {
+		rf.mu.Unlock()
+		return false, 0
+	}
 	if reply.Success {
 		matchedLogIdx = matchedLogIdx + uint64(len(entries))
 		if rf.matchIdx[server] < matchedLogIdx{
 			rf.logger.Trace.Printf("%v matched become %v, leader is %v\n", server, matchedLogIdx, rf.me)
 			rf.matchIdx[server] = matchedLogIdx
 			rf.nextIdx[server] = matchedLogIdx + 1
+
+			if matchedLogIdx == uint64(len(rf.log)) + rf.startIdx {
+				rf.logger.Warning.Printf("%v matched to %v, log len in master %v %v\n", server, matchedLogIdx, rf.me, len(rf.log) + int(rf.startIdx))
+			}
 		}
 	} else if reply.Term == rf.currentTerm {
-		if reply.CommitId > uint64(len(rf.log)) + rf.startIdx {
-			rf.logger.Error.Fatalln("follower commit more than leader")
+		if reply.CommitId >= uint64(len(rf.log)) + rf.startIdx {
+			rf.logger.Error.Fatalf("follower %v commit %v more than leader %v's logsize %v, commit %v, term %v, follower size %v\n", server, reply.CommitId, rf.me, uint64(len(rf.log)) + rf.startIdx, rf.commitIdx, rf.currentTerm, reply.LogSize)
 		}
 		rf.matchIdx[server] = reply.CommitId
 		rf.nextIdx[server] = reply.CommitId + 1
+
+		if rf.matchIdx[server] == uint64(len(rf.log)) + rf.startIdx {
+			rf.logger.Warning.Printf("%v matched to %v, log len in master %v log len %v, commit %v, term %v follower size %v\n", server, rf.matchIdx[server], rf.me, len(rf.log), rf.commitIdx, rf.currentTerm, reply.LogSize)
+		}
 	}
 
 	rf.mu.Unlock()
@@ -182,7 +198,6 @@ func (rf *Raft) broadcastHeartBeat() {
 					staleSignal <- true
 				}
 			}(i)
-
 		}
 
 		endLoop := false
@@ -204,7 +219,7 @@ func (rf *Raft) broadcastHeartBeat() {
 				if rf.currentTerm == msg.Term {
 					// in this Term, there are 2 leaders
 					// impossible
-					log.Fatalf("in leader %v's broadcast, receive the same heartbeat Term, value: %v leader: %v\n", rf.me, msg.Term, msg.LeaderId)
+					rf.logger.Error.Fatalf("in leader %v's broadcast, receive the same heartbeat Term, value: %v leader: %v\n", rf.me, msg.Term, msg.LeaderId)
 				}else if rf.currentTerm < msg.Term {
 					// heart beat from a superior leader
 					rf.mu.Lock()

@@ -1,7 +1,6 @@
 package raft
 
 import (
-	"log"
 	"time"
 )
 
@@ -12,9 +11,12 @@ func (rf *Raft) election(electionTerm uint64) {
 	// increase current Term
 	// vote for myself
 	rf.mu.Lock()
-	if rf.currentTerm >= electionTerm {
-		// race
-		log.Fatalf("%v's term is updated by someone, but not be caught\n", rf.me)
+	if rf.currentTerm >= electionTerm || (rf.votedFor.Term >= electionTerm && rf.votedFor.LeaderId >= 0) {
+		rf.role = FOLLOWER
+		rf.logger.Trace.Printf("catch a potential race, election term %v, vote for %+v\n", electionTerm, rf.votedFor)
+		go rf.heartBeatTimer()
+		rf.mu.Unlock()
+		return
 	}
 	rf.role = CANDICATE
 	rf.currentTerm = electionTerm
@@ -123,7 +125,7 @@ func (rf *Raft) election(electionTerm uint64) {
 			}
 			rf.role = LEADER
 			rf.mu.Unlock()
-			rf.logger.Info.Printf("candidate %v becomes leader in Term %v\n", rf.me, rf.currentTerm)
+			rf.logger.Info.Printf("candidate %v becomes leader in Term %v, log size %v, commitIdx %v\n", rf.me, rf.currentTerm, uint64(len(rf.log)) + rf.startIdx, rf.commitIdx)
 			go rf.broadcastHeartBeat()
 
 			return
