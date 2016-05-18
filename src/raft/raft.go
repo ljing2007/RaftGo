@@ -27,7 +27,7 @@ import (
 	"os"
 )
 
-const dbg bool = true
+const dbg bool = false
 
 // import "bytes"
 // import "encoding/gob"
@@ -86,6 +86,7 @@ type Raft struct {
 	votedFor	TermLeader
 	log		[]Entry
 	startIdx	uint64	// idx that snapshot ends
+	startTerm	uint64	// term that snapshot ends
 
 
 	// mutable
@@ -130,6 +131,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
 	e.Encode(rf.startIdx)
+	e.Encode(rf.startTerm)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -148,6 +150,7 @@ func (rf *Raft) readPersist(data []byte) {
 	d.Decode(&rf.votedFor)
 	d.Decode(&rf.log)
 	d.Decode(&rf.startIdx)
+	d.Decode(&rf.startTerm)
 }
 
 //
@@ -251,9 +254,9 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	}
 
 	// treat all messages, whose term >= rf.currentTerm, as a heartBeat
-	go func() {
+	//go func() {
 		rf.heartBeatCh <- &args
-	}()
+	//}()
 
 	// check the consistency
 	logIdxCheck := args.PrevLogIdx
@@ -325,11 +328,12 @@ func (rf *Raft) DeleteOldEntries (commitIdx int) {
 		return
 	}
 
-	// clean the log
-	rf.log = rf.log[commitIdx - int(rf.startIdx) :]
-
 	// update info
+	rf.startTerm = rf.log[commitIdx - int(rf.startIdx)].Term
 	rf.startIdx = uint64(commitIdx)
+
+	// clean the log
+	rf.log = rf.log[commitIdx - int(rf.startIdx) + 1:]
 
 	// persist the updated info
 	rf.persist()
@@ -420,6 +424,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // turn off debug output from this instance.
 //
 func (rf *Raft) Kill() {
+	rf.logger.Warning.Println("kill")
 	rf.kill<-true
 }
 
@@ -441,7 +446,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf := &Raft{}
 
 	if !dbg {
-		rf.logger.InitLogger(ioutil.Discard, ioutil.Discard, os.Stderr, os.Stderr)
+		rf.logger.InitLogger(ioutil.Discard, os.Stdout, os.Stderr, os.Stderr)
 	}else {
 		rf.logger.InitLogger(os.Stdout, os.Stdout, os.Stdout, os.Stderr)
 	}
@@ -458,6 +463,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = TermLeader{0, -1}
 	rf.log = make([]Entry, 0)
 	rf.startIdx = 0
+	rf.startTerm = 0
 
 	// insert a fake entry in the first log
 	rf.log = append(rf.log, Entry{0, nil})

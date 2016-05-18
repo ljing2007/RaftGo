@@ -9,19 +9,12 @@ import (
 func (rf *Raft) heartBeatTimer() {
 	// in the same Term, we use the same timeout
 	waitTime := time.Duration(HEARTHEATTIMEOUTBASE + rf.rand.Intn(HEARTBEATTIMEOUTRANGE))
-
+	timmer := time.NewTimer(waitTime * time.Millisecond)
 	for {
 
 		if rf.role != FOLLOWER {
 			rf.logger.Error.Fatalln("call heartBeatTimer, but I'm not a follower")
 		}
-
-		timeout := make(chan bool, 1)
-
-		go func() {
-			time.Sleep(waitTime * time.Millisecond)
-			timeout <- true
-		}()
 
 		// loop until time out or receive a correct heartbeat
 		endLoop := false
@@ -42,9 +35,10 @@ func (rf *Raft) heartBeatTimer() {
 					rf.votedFor = TermLeader{msg.Term, msg.LeaderId}
 					rf.persist()
 					rf.mu.Unlock()
+					timmer.Reset(waitTime * time.Millisecond)
 					endLoop = true
 				}
-			case <-timeout:
+			case <-timmer.C:
 			// time out, end the heartbeat timer
 			// and fire a new election Term
 				go rf.election(rf.currentTerm + 1)

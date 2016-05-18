@@ -87,12 +87,7 @@ func (rf *Raft) election(electionTerm uint64) {
 
 	// election timer
 	waitTime := time.Duration(ELECTIONTIMEOUTBASE+ rf.rand.Intn(ELECTIONTIMEOUTRANGE))
-	timeout := make(chan bool, 1)
-	go func() {
-		time.Sleep(waitTime * time.Millisecond)
-		timeout <- true
-	}()
-
+	timmer := time.NewTimer(waitTime * time.Millisecond)
 	// loop until win, fail, or timeout
 	for {
 		select {
@@ -118,11 +113,9 @@ func (rf *Raft) election(electionTerm uint64) {
 			return
 		case <-winSignal:
 			rf.mu.Lock()
-			rf.role = LEADER
-
-		// reinit nextIdx, matchIdx
-			rf.nextIdx = make([]uint64, len(rf.peers))
-			rf.matchIdx = make([]uint64, len(rf.peers))
+			// reinit nextIdx, matchIdx
+			rf.nextIdx = make([]uint64, len(rf.peers), len(rf.peers))
+			rf.matchIdx = make([]uint64, len(rf.peers), len(rf.peers))
 			for i := 0; i < len(rf.peers); i++ {
 				if i == rf.me {
 					continue
@@ -130,6 +123,7 @@ func (rf *Raft) election(electionTerm uint64) {
 				rf.nextIdx[i] = uint64(len(rf.log)) + rf.startIdx
 				rf.matchIdx[i] = 0
 			}
+			rf.role = LEADER
 			rf.mu.Unlock()
 			rf.logger.Info.Printf("candidate %v becomes leader in Term %v\n", rf.me, rf.currentTerm)
 			go rf.broadcastHeartBeat()
@@ -157,7 +151,7 @@ func (rf *Raft) election(electionTerm uint64) {
 			rf.persist()
 			go rf.heartBeatTimer()
 			return
-		case <-timeout:
+		case <-timmer.C:
 		// fire another election Term
 			rf.logger.Trace.Printf("election timeout in candidate %v term %v\n", rf.me, rf.currentTerm)
 			go rf.election(electionTerm + 1)

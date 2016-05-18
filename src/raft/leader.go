@@ -80,17 +80,29 @@ func(rf *Raft) leaderCommit() {
 
 func(rf *Raft) sync(server int) (bool, uint64) {
 	rf.mu.Lock()
+	if server >= len(rf.nextIdx) {
+		rf.logger.Error.Printf("invalid mm %v %v\n", server, len(rf.nextIdx))
+	}
+	if server >= len(rf.matchIdx) {
+		rf.logger.Error.Printf("invalid mm %v %v\n", server, len(rf.matchIdx))
+	}
+
 	var matchedLogIdx uint64
 	var matchedTerm uint64
 	var entries []Entry = nil
 
 	var snapshot []byte = nil
-	if rf.nextIdx[server] - 1 <= rf.startIdx {
+	if rf.nextIdx[server] - 1 < rf.startIdx {
 		// a slow follower, send snapshot
 		matchedLogIdx = rf.startIdx
 		snapshot = rf.persister.ReadSnapshot()
 
 		entries = rf.log
+	}else if rf.nextIdx[server] - 1 == rf.startIdx {
+		matchedLogIdx = rf.startIdx
+		matchedTerm = rf.startTerm
+
+		entries = rf.log[matchedLogIdx - rf.startIdx + 1: ]
 	}else if rf.nextIdx[server] == rf.matchIdx[server] + 1 {
 		// consistent
 		matchedLogIdx = rf.matchIdx[server]
@@ -106,8 +118,8 @@ func(rf *Raft) sync(server int) (bool, uint64) {
 		// haven't achieve consistency, but follower is up-to-date
 		matchedLogIdx = rf.nextIdx[server] - 1
 
-		entries = rf.log[matchedLogIdx + 1 : ]
-		matchedTerm = rf.log[matchedLogIdx].Term
+		entries = rf.log[matchedLogIdx - rf.startIdx + 1 : ]
+		matchedTerm = rf.log[matchedLogIdx - rf.startIdx].Term
 	}
 	rf.mu.Unlock()
 
@@ -148,18 +160,13 @@ func(rf *Raft) sync(server int) (bool, uint64) {
 // used by leader to send out heartbeat
 func (rf *Raft) broadcastHeartBeat() {
 	waitTime := time.Duration(HEARTBEATINTERVAL)
+	timmer := time.NewTimer(waitTime * time.Millisecond)
 	for {
 		if rf.role != LEADER {
 			log.Fatalf("call broadcast heartbeat, but I'm not a leader\n")
 		}
 
 		// send out heartheat every HEARTBEATINTERVAL ms
-		timeout := make(chan bool, 1)
-		go func() {
-			time.Sleep(waitTime * time.Millisecond)
-			timeout <- true
-		}()
-
 
 		staleSignal := make(chan bool, len(rf.peers) - 1)
 
@@ -214,9 +221,10 @@ func (rf *Raft) broadcastHeartBeat() {
 					return
 				}
 
-			case <-timeout:
+			case <- timmer.C:
 			// begin another broadcast round
 				endLoop = true
+				timmer.Reset(waitTime * time.Millisecond)
 				break
 			}
 		}
