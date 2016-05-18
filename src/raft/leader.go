@@ -31,9 +31,11 @@ func(rf *Raft) leaderCommit() {
 		return
 	}
 
+	minIdx += int(rf.startIdx)
+
 	// find the safe upper bound
 	upperBound := rf.commitIdx
-	for minIdx < len(rf.log)  {
+	for minIdx < len(rf.log) + int(rf.startIdx)  {
 		replicatedNum := 1
 		safe := false
 
@@ -63,11 +65,11 @@ func(rf *Raft) leaderCommit() {
 	cId := rf.commitIdx + 1
 	//rf.logger.Trace.Printf("leader %v upperbound %v min %v\n", rf.me, upperBound, minIdx)
 	for cId <= upperBound {
-		if cId >= uint64(len(rf.log)) {
+		if cId >= uint64(len(rf.log)) + rf.startIdx {
 			rf.logger.Error.Fatalln("out of bound")
 		}
-		rf.logger.Trace.Printf("leader %v commit %v %v", rf.me, cId, rf.log[cId])
-		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId].Command, false, nil}
+		rf.logger.Trace.Printf("leader %v commit %v %v", rf.me, cId, rf.log[cId - rf.startIdx])
+		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId - rf.startIdx].Command, false, nil}
 		rf.commitIdx = cId
 		rf.persist()
 		cId++
@@ -77,44 +79,49 @@ func(rf *Raft) leaderCommit() {
 
 
 func(rf *Raft) sync(server int) (bool, uint64) {
-	rf.pLocks[server].Lock()
-
-	//rf.mu.Lock()
+	rf.mu.Lock()
 	var matchedLogIdx uint64
-	var entries []Entry
-	if rf.nextIdx[server] == rf.matchIdx[server] + 1 {
+	var matchedTerm uint64
+	var entries []Entry = nil
+
+	var snapshot []byte = nil
+	if rf.nextIdx[server] - 1 <= rf.startIdx {
+		// a slow follower, send snapshot
+		matchedLogIdx = rf.startIdx
+		snapshot = rf.persister.ReadSnapshot()
+
+		entries = rf.log
+	}else if rf.nextIdx[server] == rf.matchIdx[server] + 1 {
 		// consistent
 		matchedLogIdx = rf.matchIdx[server]
 
-		if matchedLogIdx + 1 < uint64(len(rf.log)){
+		if matchedLogIdx + 1 < uint64(len(rf.log)) + rf.startIdx{
 
 		}else {
 			rf.logger.Trace.Printf("%v matched to %v, log len in master %v %v\n", server, matchedLogIdx, rf.me, len(rf.log))
 		}
-
+		entries = rf.log[matchedLogIdx - rf.startIdx + 1 : ]
+		matchedTerm = rf.log[matchedLogIdx - rf.startIdx].Term
 	}else {
-		// haven't achieve consistency
-		// use nextIdx and empty entries
+		// haven't achieve consistency, but follower is up-to-date
 		matchedLogIdx = rf.nextIdx[server] - 1
-	}
-	rf.pLocks[server].Unlock()
 
-	entries = rf.log[matchedLogIdx + 1 : ]
-	matchedTermIdx := rf.log[matchedLogIdx].Term
-	//args := makeAppendEntriesArgs(rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, Entry{}, rf.commitIdx)
-	args := AppendEntriesArgs{rf.currentTerm, rf.me, matchedLogIdx, matchedTermIdx, entries, rf.commitIdx}
+		entries = rf.log[matchedLogIdx + 1 : ]
+		matchedTerm = rf.log[matchedLogIdx].Term
+	}
+	rf.mu.Unlock()
+
+	args := AppendEntriesArgs{rf.currentTerm, rf.me, matchedLogIdx, matchedTerm, entries, rf.commitIdx, snapshot}
 	rf.logger.Trace.Printf("leader %v send %v to %v\n", rf.me, args, server)
 	reply := new(AppendEntriesReply)
 	ok := rf.sendAppendEntries(server, args, reply)
-
 
 	if !ok {
 
 		return false, 0
 	}
 
-
-	rf.pLocks[server].Lock()
+	rf.mu.Lock()
 	if reply.Success {
 		matchedLogIdx = matchedLogIdx + uint64(len(entries))
 		if rf.matchIdx[server] < matchedLogIdx{
@@ -123,14 +130,14 @@ func(rf *Raft) sync(server int) (bool, uint64) {
 			rf.nextIdx[server] = matchedLogIdx + 1
 		}
 	} else if reply.Term == rf.currentTerm {
-		if reply.CommitId > uint64(len(rf.log)) {
+		if reply.CommitId > uint64(len(rf.log)) + rf.startIdx {
 			rf.logger.Error.Fatalln("follower commit more than leader")
 		}
 		rf.matchIdx[server] = reply.CommitId
 		rf.nextIdx[server] = reply.CommitId + 1
 	}
 
-	rf.pLocks[server].Unlock()
+	rf.mu.Unlock()
 	if reply.Success {
 		rf.leaderCommit()
 	}

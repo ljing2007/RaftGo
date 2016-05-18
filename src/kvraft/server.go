@@ -9,6 +9,7 @@ import (
 	"os"
 	"io/ioutil"
 	"time"
+	"bytes"
 )
 
 const Debug = 0
@@ -29,17 +30,20 @@ type PendingOps struct {
 
 
 type RaftKV struct {
+	// persisted data when snapshotting
+	data		map[string]string	// kv store data
+	stamps		map[int64]int64		// client id --> latest request id
+
+	// in memory
 	mu      sync.Mutex
 	me      int
 	rf      *raft.Raft
+	persister *raft.Persister
 	applyCh chan raft.ApplyMsg
 
 	maxraftstate int // snapshot if log grows this big
 
-	data		map[string]string	// kv store data
 	pendingOps	map[int]*PendingOps	// pending requests
-	stamps		map[int64]int64		// client id --> latest request id
-
 	logger	raft.Logger
 }
 
@@ -77,7 +81,7 @@ func (kv *RaftKV) receiveApply() {
 			continue
 		}
 
-		// send back execute result
+		// it the request is sent to this server, send back execute result
 		if op.Req.RequestId != req.RequestId || op.Req.ClientId != req.ClientId {
 			op.Success <- false
 		}else {
@@ -87,6 +91,12 @@ func (kv *RaftKV) receiveApply() {
 			op.Success <- true
 		}
 		delete(kv.pendingOps, idx)
+
+		if kv.maxraftstate > 0 && kv.raftStateSize() {
+			// exceed threshold, doing snapshot
+			kv.saveSnapShot()
+			kv.rf.DeleteOldEntries(idx)
+		}
 		kv.mu.Unlock()
 	}
 }
@@ -133,6 +143,31 @@ func (kv *RaftKV) ExecuteRequest(args Op, reply *Reply) {
 	}
 }
 
+func (kv *RaftKV) raftStateSize() int {
+	return kv.persister.RaftStateSize()
+}
+
+// snapshot current state and return it as a byte array
+func (kv *RaftKV) saveSnapShot() {
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	e.Encode(kv.data)
+	e.Encode(kv.stamps)
+	kv.persister.SaveSnapshot(w.Bytes())
+}
+
+// load the state from snap shot
+func (kv *RaftKV) loadSnapShot(data []byte) {
+	if len(data) <= 0 {
+		return
+	}
+
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	d.Decode(&kv.data)
+	d.Decode(&kv.stamps)
+}
+
 //
 // the tester calls Kill() when a RaftKV instance won't
 // be needed again. you are not required to do anything
@@ -167,6 +202,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv := new(RaftKV)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
+	kv.persister = persister
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
@@ -180,6 +216,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	}else {
 		kv.logger.InitLogger(ioutil.Discard, ioutil.Discard, os.Stderr, os.Stderr)
 	}
+
+
 	go kv.receiveApply()
 	return kv
 }

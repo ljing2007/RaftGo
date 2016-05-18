@@ -27,7 +27,7 @@ import (
 	"os"
 )
 
-const dbg bool = false
+const dbg bool = true
 
 // import "bytes"
 // import "encoding/gob"
@@ -73,8 +73,6 @@ type ApplyMsg struct {
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
-	log		[]Entry
-
 	mu        sync.Mutex
 	peers     []*labrpc.ClientEnd
 	persister *Persister
@@ -86,6 +84,8 @@ type Raft struct {
 	// persist
 	currentTerm 	uint64
 	votedFor	TermLeader
+	log		[]Entry
+	startIdx	uint64	// idx that snapshot ends
 
 
 	// mutable
@@ -113,7 +113,6 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
 	rf.mu.Lock()
 	rf.mu.Unlock()
 	return int(rf.currentTerm), rf.role == LEADER
@@ -130,6 +129,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
+	e.Encode(rf.startIdx)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -138,13 +138,16 @@ func (rf *Raft) persist() {
 // restore previously persisted state.
 //
 func (rf *Raft) readPersist(data []byte) {
-	if len(data) > 0 {
-		r := bytes.NewBuffer(data)
-		d := gob.NewDecoder(r)
-		d.Decode(&rf.currentTerm)
-		d.Decode(&rf.votedFor)
-		d.Decode(&rf.log)
+	if len(data) <= 0 {
+		return
 	}
+
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	d.Decode(&rf.currentTerm)
+	d.Decode(&rf.votedFor)
+	d.Decode(&rf.log)
+	d.Decode(&rf.startIdx)
 }
 
 //
@@ -172,6 +175,8 @@ type AppendEntriesArgs struct {
 	PrevLogTerm	uint64
 	Entries		[]Entry
 	LeaderCommit	uint64
+	//LeaderStartIdx	uint64
+	Snapshot	[]byte
 }
 
 
@@ -188,7 +193,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	lastLogIdxV := uint64(len(rf.log) - 1)
 	lastLogTermV := rf.log[lastLogIdxV].Term
-
+	lastLogIdxV += rf.startIdx
 
 	deny := false
 
@@ -250,45 +255,84 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		rf.heartBeatCh <- &args
 	}()
 
-	// then, let's check the consistency
+	// check the consistency
 	logIdxCheck := args.PrevLogIdx
 	logTermCheck := args.PrevLogTerm
-	if logIdxCheck >= uint64(len(rf.log)) || logTermCheck != rf.log[logIdxCheck].Term {
+
+	if logIdxCheck > uint64(len(rf.log)) + rf.startIdx && args.Snapshot != nil {
+		rf.persister.SaveSnapshot(args.Snapshot)
+		rf.startIdx = logIdxCheck
+		rf.applyCh <- ApplyMsg{0, nil, true, args.Snapshot}
+
+		if args.LeaderCommit <= logIdxCheck {
+			rf.logger.Error.Println("leader's commitIdx <= its startIdx")
+		}
+
+		rf.log = args.Entries
+		if len(rf.log) <= 0 {
+			rf.logger.Error.Println("append snapshot but empty log entries")
+		}
+		rf.applyCh <- ApplyMsg{int(rf.startIdx + 1), rf.log[0], false, nil}
+		rf.commitIdx = rf.startIdx + 1
+		rf.persist()
+	}else if logIdxCheck >= uint64(len(rf.log)) + rf.startIdx || logTermCheck != rf.log[logIdxCheck - rf.startIdx].Term {
 		// consistency check fails
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		reply.CommitId = rf.commitIdx
 		rf.logger.Trace.Printf("appendEngries in %v check consistency fail", rf.me)
 		return
-	}
-
-	if rf.commitIdx > logIdxCheck {
+	}else if rf.commitIdx > logIdxCheck {
+		// my log is more complete than leader's
+		// this could happen when network is unreliable
 		rf.logger.Trace.Printf("try to delete committed entry in %v, get %v from %v, here %v, leader %v\n", rf.me, logIdxCheck, args.LeaderId, rf.commitIdx, rf.votedFor.LeaderId)
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		reply.CommitId = rf.commitIdx
 		return;
+	}else {
+		// pass consistency check
+		// delete and append entries safely
+		rf.log = rf.log[ : logIdxCheck + 1 - rf.startIdx]
+		rf.log = append(rf.log, args.Entries...)
 	}
-
-	// pass consistency check
-	// delete and append entries safely
-	rf.log = rf.log[ : logIdxCheck + 1]
-	rf.log = append(rf.log, args.Entries...)
 
 	// commit locally
 	for cId := rf.commitIdx + 1; cId <= args.LeaderCommit; cId++ {
-		if cId >= uint64(len(rf.log))  {
+		if cId >= uint64(len(rf.log)) + rf.startIdx {
 			break
 		}
 		rf.commitIdx = cId
 		rf.logger.Trace.Printf("follower %v commit %v %v", rf.me, cId, rf.log[cId])
-		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId].Command, false, nil}
+		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId - rf.startIdx].Command, false, nil}
 	}
 
 	rf.persist()
 	reply.Term = rf.currentTerm
 	reply.Success = true
 	return
+}
+
+
+func (rf *Raft) DeleteOldEntries (commitIdx int) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	commitIdx -= 1	// at least leave one entry for consistency check
+
+	if commitIdx <= int(rf.startIdx) {
+		// already deleted, ignore
+		return
+	}
+
+	// clean the log
+	rf.log = rf.log[commitIdx - int(rf.startIdx) :]
+
+	// update info
+	rf.startIdx = uint64(commitIdx)
+
+	// persist the updated info
+	rf.persist()
 }
 
 //
@@ -413,6 +457,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votedFor = TermLeader{0, -1}
 	rf.log = make([]Entry, 0)
+	rf.startIdx = 0
 
 	// insert a fake entry in the first log
 	rf.log = append(rf.log, Entry{0, nil})

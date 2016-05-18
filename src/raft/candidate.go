@@ -24,7 +24,7 @@ func (rf *Raft) election(electionTerm uint64) {
 	rf.logger.Trace.Printf("new election begin in %v, Term %v\n", rf.me, rf.currentTerm)
 	lastLogIdx := uint64(len(rf.log) - 1)
 	lastLogTerm := rf.log[lastLogIdx].Term
-	args := RequestVoteArgs{electionTerm, rf.me, lastLogIdx, lastLogTerm}
+	args := RequestVoteArgs{electionTerm, rf.me, lastLogIdx + rf.startIdx, lastLogTerm}
 
 
 	type Rec struct {
@@ -127,7 +127,7 @@ func (rf *Raft) election(electionTerm uint64) {
 				if i == rf.me {
 					continue
 				}
-				rf.nextIdx[i] = uint64(len(rf.log))
+				rf.nextIdx[i] = uint64(len(rf.log)) + rf.startIdx
 				rf.matchIdx[i] = 0
 			}
 			rf.mu.Unlock()
