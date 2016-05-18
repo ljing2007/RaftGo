@@ -45,7 +45,7 @@ type Op struct {
 	Type	OpType
 	Key 	string
 	Value 	string
-	//ClientId 	int64
+	ClientId 	int64
 	RequestId	int64
 }
 

@@ -6,9 +6,9 @@ import (
 	"log"
 	"raft"
 	"sync"
-	"time"
 	"os"
 	"io/ioutil"
+	"time"
 )
 
 const Debug = 0
@@ -36,8 +36,9 @@ type RaftKV struct {
 
 	maxraftstate int // snapshot if log grows this big
 
-	data	map[string]string	// kv store data
+	data		map[string]string	// kv store data
 	pendingOps	map[int]*PendingOps	// pending requests
+	stamps		map[int64]int64		// client id --> latest request id
 
 	logger	raft.Logger
 }
@@ -53,22 +54,35 @@ func (kv *RaftKV) receiveApply() {
 
 		kv.mu.Lock()
 
-		op, ok := kv.pendingOps[idx]
+		op, p_ok := kv.pendingOps[idx]
+		stamp, s_ok := kv.stamps[req.ClientId]
 
-		if !ok {
-			kv.logger.Trace.Println("server %v doesn't have this pending op")
+		if (s_ok && stamp >= req.RequestId) {
+			// already execute this cmd, ignore it
+			// kv.logger.Warning.Printf("get stale cmd, server's stamp %v, req's stamp %v\n", stamp, req.RequestId)
+		} else {
+			// haven't execute this request
+			kv.logger.Trace.Printf("req type %v\n", req.Type)
+			switch req.Type {
+			case PUT:
+				kv.data[req.Key] = req.Value
+			case APPEND:
+				kv.data[req.Key] += req.Value
+			}
+			kv.stamps[req.ClientId] = req.RequestId
+		}
+
+		if !p_ok {
 			kv.mu.Unlock()
 			continue
 		}
 
-		if op.Req.RequestId != req.RequestId {
+		// send back execute result
+		if op.Req.RequestId != req.RequestId || op.Req.ClientId != req.ClientId {
 			op.Success <- false
 		}else {
-			switch op.Req.Type {
-			case PUT:
-				kv.data[op.Req.Key] = op.Req.Value
-			case APPEND:
-				kv.data[op.Req.Key] += op.Req.Value
+			if op.Req.Type == GET {
+				op.Req.Value = kv.data[op.Req.Key]
 			}
 			op.Success <- true
 		}
@@ -88,7 +102,7 @@ func (kv *RaftKV) ExecuteRequest(args Op, reply *Reply) {
 		return;
 	}
 
-	kv.logger.Trace.Printf("start %v in %v, is leader: %v, idx %v\n", args, kv.me, ok, idx)
+	kv.logger.Trace.Printf("start %+v in %v, is leader: %v, idx %v\n", args, kv.me, ok, idx)
 
 	// save this request to pending ops
 	op := new(PendingOps)
@@ -108,12 +122,12 @@ func (kv *RaftKV) ExecuteRequest(args Op, reply *Reply) {
 	select {
 	case <-timmer.C:
 		reply.Success = false
-		kv.logger.Trace.Println("time out")
+		kv.logger.Warning.Printf("time out for the args %+v\n", args)
 		return
 	case ok = <- op.Success:
 		reply.Success = ok
 		if ok && args.Type == GET {
-			reply.Value = kv.data[args.Key]
+			reply.Value = op.Req.Value
 		}
 		return
 	}
@@ -154,13 +168,12 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 
-	// Your initialization code here.
-
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	kv.data = make(map[string]string)
 	kv.pendingOps = make(map[int]*PendingOps)
+	kv.stamps = make(map[int64]int64)
 
 	if Debug > 0 {
 		kv.logger.InitLogger(os.Stdout, os.Stdout, os.Stderr, os.Stderr)

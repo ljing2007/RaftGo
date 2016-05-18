@@ -4,8 +4,8 @@ import "labrpc"
 import "crypto/rand"
 import (
 	"math/big"
+	"sync/atomic"
 )
-//import "sync/atomic"
 
 
 type Clerk struct {
@@ -28,14 +28,14 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 
 	ck.leader = 0
 	ck.me = nrand()
+	ck.reqId = 0
 	return ck
 }
 
 // keep sending the request to server, until get reply successfully
 func (ck *Clerk) execute(req Op) string{
-	//req.ClientId = ck.me
-	//req.RequestId = atomic.AddInt64(&ck.reqId, 1)
-	req.RequestId = nrand()
+	req.ClientId = ck.me
+	req.RequestId = atomic.AddInt64(&ck.reqId, 1)
 
 	i := ck.leader	// start from last saved leader id
 	n := len(ck.servers)	// n stands for server num
