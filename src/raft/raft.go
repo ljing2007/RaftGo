@@ -254,9 +254,9 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	}
 
 	// treat all messages, whose term >= rf.currentTerm, as a heartBeat
-	//go func() {
-		rf.heartBeatCh <- &args
-	//}()
+	go func(args *AppendEntriesArgs) {
+		rf.heartBeatCh <- args
+	}(&args)
 
 	// check the consistency
 	logIdxCheck := args.PrevLogIdx
@@ -424,7 +424,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // turn off debug output from this instance.
 //
 func (rf *Raft) Kill() {
-	rf.logger.Warning.Println("kill")
+	// rf.logger.Warning.Println("kill")
 	rf.kill<-true
 }
 
@@ -446,7 +446,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf := &Raft{}
 
 	if !dbg {
-		rf.logger.InitLogger(ioutil.Discard, os.Stdout, os.Stderr, os.Stderr)
+		rf.logger.InitLogger(ioutil.Discard, ioutil.Discard, os.Stderr, os.Stderr)
 	}else {
 		rf.logger.InitLogger(os.Stdout, os.Stdout, os.Stdout, os.Stderr)
 	}
@@ -474,8 +474,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.role = FOLLOWER
 
 	// init server only elements
-	rf.nextIdx = nil
-	rf.matchIdx = nil
+	rf.nextIdx = make([]uint64, len(rf.peers), len(rf.peers))
+	rf.matchIdx = make([]uint64, len(rf.peers), len(rf.peers))
 	rf.pLocks = make([]sync.Mutex, len(peers))
 
 	// initialize from state persisted before a crash

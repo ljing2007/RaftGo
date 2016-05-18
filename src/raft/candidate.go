@@ -114,8 +114,6 @@ func (rf *Raft) election(electionTerm uint64) {
 		case <-winSignal:
 			rf.mu.Lock()
 			// reinit nextIdx, matchIdx
-			rf.nextIdx = make([]uint64, len(rf.peers), len(rf.peers))
-			rf.matchIdx = make([]uint64, len(rf.peers), len(rf.peers))
 			for i := 0; i < len(rf.peers); i++ {
 				if i == rf.me {
 					continue

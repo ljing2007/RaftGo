@@ -195,8 +195,6 @@ func (rf *Raft) broadcastHeartBeat() {
 			// convert to follower stage
 				rf.mu.Lock()
 				rf.role = FOLLOWER
-			// rf.nextIdx = nil
-			// rf.matchIdx = nil
 				rf.mu.Unlock()
 				rf.logger.Trace.Printf("leader %v is stale, turns to follower\n", rf.me)
 				go rf.heartBeatTimer()
@@ -213,8 +211,6 @@ func (rf *Raft) broadcastHeartBeat() {
 					rf.role = FOLLOWER
 					rf.currentTerm = msg.Term
 					rf.votedFor = TermLeader{msg.Term, msg.LeaderId}
-					rf.nextIdx = nil
-					rf.matchIdx = nil
 					rf.mu.Unlock()
 					rf.logger.Trace.Printf("leader %v finds a superior leader %v, turns to follower\n", rf.me, rf.votedFor)
 					go rf.heartBeatTimer()
