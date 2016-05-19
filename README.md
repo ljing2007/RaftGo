@@ -5,7 +5,10 @@ Forked from [MIT's 6.824 (Distributed System)](https://pdos.csail.mit.edu/6.824/
 
 ## Directory Tree
 * src/kvraft: a Key-Value store based on Raft
-	* under develop
+	* apply the Raft to state machines to implement a KV store
+	* **NEW FEATURE!:** support log snapshot and compaction
+		* based on the algorithm described in [**Log Compaction in Raft**](https://ramcloud.atlassian.net/wiki/download/attachments/6586373/compaction.pdf?version=1&modificationDate=1367123151531&api=v2)'s section 5.3 (but I think my implementation is very naive and simple, it's not very efficient)
+	* other reference: [blahgeek's implementation](https://github.com/blahgeek/6.824-golabs/)
 
 * src/raft: implementation of [**The Raft Consensus Algorithm**](http://web.stanford.edu/~ouster/cgi-bin/papers/raft-atc14)
 	* almost supports all features described in the paper:
