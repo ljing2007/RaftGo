@@ -12,7 +12,7 @@ import (
 	"bytes"
 )
 
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -87,7 +87,9 @@ func (kv *RaftKV) receiveApply(msg *raft.ApplyMsg) {
 		// exceed threshold, doing snapshot
 		kv.logger.Info.Printf("server %v making snapshot\n", kv.me)
 		kv.saveSnapShot()
-		kv.rf.DeleteOldEntries(idx, stateSize)
+		go func() {
+			kv.rf.DeleteOldEntries(idx, stateSize)
+		}()
 	}
 
 	// check whether need to reply GET op
@@ -104,6 +106,7 @@ func (kv *RaftKV) receiveApply(msg *raft.ApplyMsg) {
 		}
 		op.Success <- true
 	}
+
 	delete(kv.pendingOps, idx)
 }
 
@@ -112,6 +115,7 @@ func (kv *RaftKV) ExecuteRequest(args Op, reply *Reply) {
 
 	// send the request to raft
 	idx, _, ok := kv.rf.Start(args)
+
 	if !ok {
 		// I'm not leader, reject this reuest
 		reply.Success = false
@@ -119,7 +123,6 @@ func (kv *RaftKV) ExecuteRequest(args Op, reply *Reply) {
 	}
 
 	kv.logger.Trace.Printf("start %+v in %v, is leader: %v, idx %v\n", args, kv.me, ok, idx)
-
 	// save this request to pending ops
 	op := new(PendingOps)
 	op.Req = args
@@ -134,7 +137,7 @@ func (kv *RaftKV) ExecuteRequest(args Op, reply *Reply) {
 	kv.mu.Unlock()
 
 	// whether timing out or executed successfully
-	timmer := time.NewTimer(time.Second * 2)
+	timmer := time.NewTimer(1 * time.Second)
 	select {
 	case <-timmer.C:
 		reply.Success = false
@@ -172,7 +175,11 @@ func (kv *RaftKV) loadSnapShot(data []byte) {
 	d := gob.NewDecoder(r)
 	d.Decode(&kv.data)
 	d.Decode(&kv.stamps)
+
+	kv.logger.Info.Printf("load from snapshot, key 0 %v\n", kv.data["0"])
 }
+
+
 
 //
 // the tester calls Kill() when a RaftKV instance won't
@@ -204,10 +211,19 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 
 	gob.Register(Op{})
+	gob.Register(Reply{})
 
 	kv := new(RaftKV)
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+
+	if Debug > 0 {
+		kv.logger.InitLogger(os.Stdout, os.Stdout, os.Stderr, os.Stderr)
+	}else {
+		kv.logger.InitLogger(ioutil.Discard, ioutil.Discard, os.Stderr, os.Stderr)
+	}
+
+
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 	kv.persister = persister
@@ -220,12 +236,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.pendingOps = make(map[int]*PendingOps)
 	kv.stamps = make(map[int64]int64)
 
-	if Debug > 0 {
-		kv.logger.InitLogger(os.Stdout, os.Stdout, os.Stderr, os.Stderr)
-	}else {
-		kv.logger.InitLogger(ioutil.Discard, ioutil.Discard, os.Stderr, os.Stderr)
-	}
-
+	kv.loadSnapShot(kv.persister.ReadSnapshot())
 
 	go func() {
 		for {

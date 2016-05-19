@@ -27,7 +27,7 @@ import (
 	"os"
 )
 
-const dbg bool = false
+const dbg bool = true
 
 // import "bytes"
 // import "encoding/gob"
@@ -96,7 +96,6 @@ type Raft struct {
 	// leader only
 	nextIdx 	[]uint64
 	matchIdx 	[]uint64
-	pLocks		[]sync.Mutex
 
 	// memory
 	applyCh chan ApplyMsg
@@ -115,7 +114,7 @@ type Raft struct {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
-	rf.mu.Unlock()
+	defer rf.mu.Unlock()
 	return int(rf.currentTerm), rf.role == LEADER
 }
 
@@ -185,7 +184,7 @@ type AppendEntriesArgs struct {
 
 type AppendEntriesReply struct {
 	Term 	uint64
-	CommitId uint64
+	MatchedId uint64
 	LogSize	int	// for debug
 	Success bool
 }
@@ -267,28 +266,37 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	logIdxCheck := args.PrevLogIdx
 	logTermCheck := args.PrevLogTerm
 
-	if logIdxCheck > rf.commitIdx && args.Snapshot != nil {
-		rf.logger.Info.Printf("server %v receive a snapshot\n", rf.me)
-		rf.persister.SaveSnapshot(args.Snapshot)
-		rf.startIdx = logIdxCheck
-		rf.startTerm = logTermCheck
-		rf.applyCh <- ApplyMsg{0, nil, true, args.Snapshot}
+	if args.Snapshot != nil {
+		if logIdxCheck > rf.commitIdx {
+			rf.logger.Info.Printf("server %v receive a snapshot\n", rf.me)
+			rf.persister.SaveSnapshot(args.Snapshot)
+			rf.startIdx = logIdxCheck
+			rf.startTerm = logTermCheck
+			rf.applyCh <- ApplyMsg{0, nil, true, args.Snapshot}
 
-		if args.LeaderCommit <= logIdxCheck {
-			rf.logger.Error.Fatalln("leader's commitIdx <= its startIdx")
-		}
+			if args.LeaderCommit < logIdxCheck {
+				rf.logger.Error.Fatalln("leader's commitIdx <= its startIdx")
+			}
 
-		rf.log = args.Entries
-		if len(rf.log) <= 0 {
-			rf.logger.Error.Fatalln("append snapshot but empty log entries")
+			rf.log = args.Entries
+			if len(rf.log) <= 0 {
+				rf.logger.Error.Fatalln("append snapshot but empty log entries")
+			}
+			rf.commitIdx = rf.startIdx
+			rf.persist()
+		}else {
+			// re-send snapshot
+			reply.Success = false
+			reply.Term = rf.currentTerm
+			reply.MatchedId = rf.commitIdx
+			rf.logger.Warning.Printf("re-send snapshot to %v, get idx %v, reply %v\n", rf.me, logIdxCheck, rf.commitIdx)
+			return
 		}
-		rf.commitIdx = rf.startIdx
-		rf.persist()
-	}else if logIdxCheck >= uint64(len(rf.log)) + rf.startIdx || logTermCheck != rf.log[logIdxCheck - rf.startIdx].Term {
+	}else if logIdxCheck < rf.startIdx || logIdxCheck >= uint64(len(rf.log)) + rf.startIdx || logTermCheck != rf.log[logIdxCheck - rf.startIdx].Term {
 		// consistency check fails
 		reply.Success = false
 		reply.Term = rf.currentTerm
-		reply.CommitId = rf.commitIdx
+		reply.MatchedId = rf.commitIdx
 		rf.logger.Trace.Printf("appendEngries in %v check consistency fail", rf.me)
 		return
 	}else if rf.commitIdx > logIdxCheck {
@@ -297,11 +305,9 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		rf.logger.Trace.Printf("try to delete committed entry in %v, get %v from %v, here %v, leader %v\n", rf.me, logIdxCheck, args.LeaderId, rf.commitIdx, rf.votedFor.LeaderId)
 		reply.Success = false
 		reply.Term = rf.currentTerm
-		reply.CommitId = rf.commitIdx
+		reply.MatchedId = rf.commitIdx
 		reply.LogSize = len(rf.log) + int(rf.startIdx)
-		if rf.startIdx != 0 {
-			rf.logger.Warning.Println(rf.startIdx)
-		}
+
 		return;
 	}else {
 		// pass consistency check
@@ -316,10 +322,11 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			break
 		}
 		rf.commitIdx = cId
-		rf.logger.Trace.Printf("follower %v commit %v %v", rf.me, cId, rf.log[cId - rf.startIdx])
+		rf.logger.Trace.Printf("follower %v commit %v %+v", rf.me, cId, rf.log[cId - rf.startIdx])
 		rf.applyCh <- ApplyMsg{int(cId), rf.log[cId - rf.startIdx].Command, false, nil}
 		rf.persist()
 	}
+	reply.MatchedId = rf.startIdx + uint64(len(rf.log)) - 1
 	reply.Term = rf.currentTerm
 	reply.Success = true
 	return
@@ -334,7 +341,7 @@ func (rf *Raft) DeleteOldEntries (commitIdx int, expectedSize int) {
 
 	if commitIdx <= int(rf.startIdx) || expectedSize > rf.persister.RaftStateSize() {
 		// already deleted, ignore
-
+		rf.logger.Trace.Printf("server %v already snapshotted, ignore\n", rf.me)
 		return
 	}
 
@@ -485,15 +492,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// init server only elements
 	rf.nextIdx = make([]uint64, len(rf.peers), len(rf.peers))
 	rf.matchIdx = make([]uint64, len(rf.peers), len(rf.peers))
-	rf.pLocks = make([]sync.Mutex, len(peers))
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.commitIdx = rf.startIdx
 
 	// init kill signal
 	rf.kill = make(chan bool, 1)
 
-	rf.logger.Info.Printf("new server %v is up, log size %v\n", me, len(rf.log))
+	rf.logger.Info.Printf("new server %v is up, log size %v, commitId %v\n", me, len(rf.log), rf.commitIdx)
 	// begin from follower, expect to receive heartbeat
 	go rf.heartBeatTimer()
 	return rf

@@ -13,9 +13,12 @@ func (rf *Raft) election(electionTerm uint64) {
 	rf.mu.Lock()
 	if rf.currentTerm >= electionTerm || (rf.votedFor.Term >= electionTerm && rf.votedFor.LeaderId >= 0) {
 		rf.role = FOLLOWER
-		rf.logger.Trace.Printf("catch a potential race, election term %v, vote for %+v\n", electionTerm, rf.votedFor)
-		go rf.heartBeatTimer()
+		if rf.votedFor.Term > rf.currentTerm {
+			rf.currentTerm = rf.votedFor.Term
+		}
+		rf.logger.Trace.Printf("catch a potential race in server %v, election term %v, vote for %+v\n", rf.me, electionTerm, rf.votedFor)
 		rf.mu.Unlock()
+		go rf.heartBeatTimer()
 		return
 	}
 	rf.role = CANDICATE
