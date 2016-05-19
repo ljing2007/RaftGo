@@ -15,7 +15,7 @@ Forked from [MIT's 6.824 (Distributed System)](https://pdos.csail.mit.edu/6.824/
 		* recovery after crash
 		* resilient to unreliable network such as network partition, message reorder and message lost
 	* note1: cluster membership must be static
-	* note2: test_test.go is the test file of this project. Please only run part of these test functions at one time, otherwise, it may throw the error of running too many go routines.
+	* ~~note2: test_test.go is the test file of this project. Please only run part of these test functions at one time, otherwise, it may throw the error of running too many go routines.~~ (Problem of race condition, solved)
 		
 	
 * src/mapreduce: MapReduce framework, used for getting familiar with the source and Go.
