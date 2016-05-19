@@ -27,7 +27,6 @@ func(rf *Raft) leaderCommit() {
 	if minIdx == 0 {
 		// can't find entry in current term
 		// unsafe to commit
-		rf.logger.Info.Println("return")
 		return
 	}
 
@@ -142,28 +141,6 @@ func(rf *Raft) sync(server int) (bool, uint64) {
 	if rf.role != LEADER {
 		return false, 0
 	}
-	//if reply.Success {
-	//	matchedLogIdx = matchedLogIdx + uint64(len(entries))
-	//	if rf.matchIdx[server] < matchedLogIdx{
-	//		rf.logger.Trace.Printf("%v matched become %v, leader is %v\n", server, matchedLogIdx, rf.me)
-	//		rf.matchIdx[server] = matchedLogIdx
-	//		rf.nextIdx[server] = matchedLogIdx + 1
-	//
-	//		if matchedLogIdx == uint64(len(rf.log)) + rf.startIdx {
-	//			rf.logger.Warning.Printf("%v matched to %v, log len in master %v %v\n", server, matchedLogIdx, rf.me, len(rf.log) + int(rf.startIdx))
-	//		}
-	//	}
-	//} else if reply.Term == rf.currentTerm {
-	//	if reply.CommitId >= uint64(len(rf.log)) + rf.startIdx {
-	//		rf.logger.Error.Fatalf("follower %v commit %v more than leader %v's logsize %v, commit %v, term %v, follower size %v\n", server, reply.CommitId, rf.me, uint64(len(rf.log)) + rf.startIdx, rf.commitIdx, rf.currentTerm, reply.LogSize)
-	//	}
-	//	rf.matchIdx[server] = reply.CommitId
-	//	rf.nextIdx[server] = reply.CommitId + 1
-	//
-	//	if rf.matchIdx[server] == uint64(len(rf.log)) + rf.startIdx {
-	//		rf.logger.Warning.Printf("%v matched to %v, log len in master %v log len %v, commit %v, term %v follower size %v\n", server, rf.matchIdx[server], rf.me, len(rf.log), rf.commitIdx, rf.currentTerm, reply.LogSize)
-	//	}
-	//}
 
 	if reply.Term == rf.currentTerm {
 		if reply.MatchedId >= uint64(len(rf.log)) + rf.startIdx {

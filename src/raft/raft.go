@@ -27,7 +27,7 @@ import (
 	"os"
 )
 
-const dbg bool = true
+const dbg bool = false
 
 // import "bytes"
 // import "encoding/gob"
@@ -268,7 +268,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 
 	if args.Snapshot != nil {
 		if logIdxCheck > rf.commitIdx {
-			rf.logger.Info.Printf("server %v receive a snapshot\n", rf.me)
+			rf.logger.Trace.Printf("server %v receive a snapshot\n", rf.me)
 			rf.persister.SaveSnapshot(args.Snapshot)
 			rf.startIdx = logIdxCheck
 			rf.startTerm = logTermCheck
@@ -289,7 +289,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			reply.Success = false
 			reply.Term = rf.currentTerm
 			reply.MatchedId = rf.commitIdx
-			rf.logger.Warning.Printf("re-send snapshot to %v, get idx %v, reply %v\n", rf.me, logIdxCheck, rf.commitIdx)
+			rf.logger.Trace.Printf("re-send snapshot to %v, get idx %v, reply %v\n", rf.me, logIdxCheck, rf.commitIdx)
 			return
 		}
 	}else if logIdxCheck < rf.startIdx || logIdxCheck >= uint64(len(rf.log)) + rf.startIdx || logTermCheck != rf.log[logIdxCheck - rf.startIdx].Term {
@@ -353,7 +353,7 @@ func (rf *Raft) DeleteOldEntries (commitIdx int, expectedSize int) {
 	// persist the updated info
 	rf.persist()
 
-	rf.logger.Info.Printf("server %v delete old entries, start idx is %v, logSize old %v new %v", rf.me, rf.startIdx, oldSize,len(rf.log))
+	rf.logger.Trace.Printf("server %v delete old entries, start idx is %v, logSize old %v new %v", rf.me, rf.startIdx, oldSize,len(rf.log))
 }
 
 //
